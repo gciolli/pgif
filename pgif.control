@@ -1,0 +1,4 @@
+# pgif extension
+comment = 'An engine for Interactive Fiction adventures'
+default_version = '1.0'
+relocatable = true

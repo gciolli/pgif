@@ -1,0 +1,5 @@
+# testpgif extension
+comment = 'A test adventure for PGIF'
+requires = pgif
+default_version = '1.0'
+relocatable = true
