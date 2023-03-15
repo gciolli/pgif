@@ -36,16 +36,32 @@ INSERT INTO directions VALUES
 -- IF tables
 --
 
-CREATE TABLE locations
+CREATE TABLE containers
 ( id text PRIMARY KEY
-, title text NOT NULL
+, title text
 , description text
+, current_place text REFERENCES containers(id)
+, user_time timestamp(0)
 );
 
+CREATE VIEW locations AS
+SELECT id
+, title
+, description
+FROM containers
+WHERE title IS NOT NULL;
+
+CREATE TABLE players AS
+SELECT id
+, current_place
+, user_time
+FROM containers
+WHERE user_time IS NOT NULL;
+
 CREATE TABLE paths
-( src     text REFERENCES locations(id)
+( src     text REFERENCES containers(id)
 , src_dir text REFERENCES directions(id)
-, tgt     text REFERENCES locations(id)
+, tgt     text REFERENCES containers(id)
 , tgt_dir text REFERENCES directions(id)
 , path_name text
 , path_duration interval
@@ -54,16 +70,10 @@ CREATE TABLE paths
 
 CREATE TABLE objects
 ( id text PRIMARY KEY
-, location text REFERENCES locations(id)
+, location text REFERENCES containers(id)
 , article text NOT NULL
 , title text NOT NULL
 , description text
-);
-
-CREATE TABLE players
-( user_name name PRIMARY KEY
-, current_place text NOT NULL REFERENCES locations(id)
-, user_time timestamp(0) NOT NULL
 );
 
 --
@@ -80,7 +90,7 @@ SELECT format('%s %s %s %s'
 , trim(to_char(user_time, 'Month'))
 , to_char(user_time, 'YYYY, HH12:MI am'))
 FROM players
-WHERE user_name = current_user
+WHERE id = current_user
 $BODY$;
 
 CREATE FUNCTION pgif_format(text)
@@ -130,6 +140,7 @@ DECLARE
 	x text;
 	y text;
 	z text;
+	w text;
 BEGIN
 	-- (1) description
 	SELECT format('You are in %s.', coalesce(description, title))
@@ -137,7 +148,7 @@ BEGIN
 	FROM locations l
 	, players u
 	WHERE l.id = u.current_place
-	AND u.user_name = current_user;
+	AND u.id = current_user;
 	-- (2) named exits
 	SELECT string_agg
 	( format
@@ -149,7 +160,7 @@ BEGIN
 	FROM players u
 	, paths p
 	, directions d
-	WHERE u.user_name = current_user
+	WHERE u.id = current_user
 	AND p.src = u.current_place
 	AND p.src_dir = d.id
 	AND p.path_name IS NOT NULL;
@@ -159,19 +170,30 @@ BEGIN
 	FROM players u
 	, paths p
 	, directions d
-	WHERE u.user_name = current_user
+	WHERE u.id = current_user
 	AND p.src = u.current_place
 	AND p.src_dir = d.id
 	AND p.path_name IS NULL;
+	-- (4) objects in sight
+	SELECT string_agg(format('%s %s', o.article, o.description), ', ')
+	INTO w
+	FROM players u
+	, objects o
+	WHERE u.id = current_user
+	AND o.location = u.current_place;
 	--
 	RETURN format
-	( E'--[%s]--\n%s\n%s\n%s.'
+	( E'--[%s]--\n%s\n%s\n%s\n%s'
 	, pgif_time()
 	, x
 	, y
 	, CASE WHEN z IS NULL
-	  THEN 'No other exits available'
+	  THEN 'No other exits available.'
 	  ELSE format('Other exits: %s', z)
+	  END
+	, CASE WHEN w IS NULL
+	  THEN ''
+	  ELSE format('You can see %s.', w)
 	  END
 	);
 END;
@@ -195,12 +217,12 @@ BEGIN
 	JOIN paths p
 	  ON p.src = u.current_place
 	 AND upper(p.src_dir) = upper(a.words[1])
-	WHERE u.user_name = current_user;
+	WHERE u.id = current_user;
 	IF FOUND THEN
 		UPDATE players
 		SET current_place = x
 		, user_time = user_time + z
-		WHERE user_name = current_user;
+		WHERE id = current_user;
 		a.response := format(E'Moving %s.\n\n%s', y, do_look());
 	ELSE
 		a.response := format(E'Cannot move %s.', y);
@@ -298,7 +320,7 @@ BEGIN
 	--
 	UPDATE players
 	SET user_time = user_time + a.duration
-	WHERE user_name = current_user;
+	WHERE id = current_user;
 END;
 $BODY$;
 

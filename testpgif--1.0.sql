@@ -9,7 +9,7 @@ BEGIN
 END;
 $BODY$;
 
-TRUNCATE objects, paths, locations, players CASCADE;
+TRUNCATE objects, paths, containers CASCADE;
 
 INSERT INTO locations VALUES
 ('il'	,'the initial location'),
