@@ -107,6 +107,21 @@ $BODY$;
 -- IF actions
 --
 
+CREATE FUNCTION do_help()
+RETURNS text
+LANGUAGE SQL
+AS $BODY$
+SELECT $$Available verbs:
+
+CLOSE (*)         LOOK            TAKE (*)
+DROP (*)          MOVE            USE (*)
+EXAMINE (*)       OPEN (*)        WAIT (*)
+HELP              QUIT
+INVENTORY (*)     SAY (*)
+
+(*) = not implemented yet$$
+$BODY$;
+
 CREATE FUNCTION do_look()
 RETURNS text
 LANGUAGE plpgsql
@@ -193,20 +208,11 @@ BEGIN
 END;
 $BODY$;
 
-CREATE FUNCTION do_inventory()
-RETURNS text
+CREATE PROCEDURE do_missing(a INOUT action)
 LANGUAGE plpgsql
 AS $BODY$
 BEGIN
-	RETURN 'Apologies: INVENTORY not yet implemented.';
-END;
-$BODY$;
-
-CREATE PROCEDURE do_say(a INOUT action)
-LANGUAGE plpgsql
-AS $BODY$
-BEGIN
-	a.response := 'Apologies: SAY not yet implemented.';
+	a.response := format('Apologies: %s not yet implemented.', a.verb);
 END;
 $BODY$;
 
@@ -259,14 +265,28 @@ BEGIN
 	WHEN 'QUIT' THEN
 		NULL;
 	WHEN 'INVENTORY' THEN
-		a.response := do_inventory();
+		CALL do_missing(a);
 	--
 	-- Write actions
 	--
 	WHEN 'SAY' THEN
-		CALL do_say(a);
+		CALL do_missing(a);
+	WHEN 'USE' THEN
+		CALL do_missing(a);
+	WHEN 'DROP' THEN
+		CALL do_missing(a);
 	WHEN 'MOVE' THEN
 		CALL do_move(a);
+	WHEN 'OPEN' THEN
+		CALL do_missing(a);
+	WHEN 'TAKE' THEN
+		CALL do_missing(a);
+	WHEN 'WAIT' THEN
+		CALL do_missing(a);
+	WHEN 'CLOSE' THEN
+		CALL do_missing(a);
+	WHEN 'EXAMINE' THEN
+		CALL do_missing(a);
 	--
 	-- None of the above
 	--
