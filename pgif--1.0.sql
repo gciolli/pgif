@@ -127,7 +127,7 @@ CLOSE (*)         LOOK            TAKE (*)
 DROP (*)          MOVE            USE (*)
 EXAMINE (*)       OPEN (*)        WAIT (*)
 HELP              QUIT
-INVENTORY (*)     SAY (*)
+INVENTORY         SAY (*)
 
 (*) = not implemented yet$$
 $BODY$;
@@ -195,6 +195,26 @@ BEGIN
 	  THEN ''
 	  ELSE format('You can see %s.', w)
 	  END
+	);
+END;
+$BODY$;
+
+CREATE FUNCTION do_inventory()
+RETURNS text
+LANGUAGE plpgsql
+AS $BODY$
+DECLARE
+	w text;
+BEGIN
+	SELECT string_agg(format('%s %s', o.article, o.description), ', ')
+	INTO w
+	FROM objects o
+	WHERE o.location = current_user;
+	--
+	RETURN format
+	( E'--[%s]--\nYou are carrying %s.'
+	, pgif_time()
+	, coalesce(w, 'no objects')
 	);
 END;
 $BODY$;
@@ -287,7 +307,8 @@ BEGIN
 	WHEN 'QUIT' THEN
 		NULL;
 	WHEN 'INVENTORY' THEN
-		CALL do_missing(a);
+		a.duration := '1 minutes';
+		a.response := do_inventory();
 	--
 	-- Write actions
 	--
