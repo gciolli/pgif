@@ -41,9 +41,10 @@ INSERT INTO paths(src, src_dir, tgt, tgt_dir, path_duration, path_name)
 VALUES	('il'	,'ne'	,'b'	,'sw'	,'2 minutes'	,'a downward slide')
 ;
 
-INSERT INTO objects VALUES
-('w'	,'b'	,'a'	,'bottle'	,'bottle of water'),
-('k'	,'il'	,'the'	,'keys'		,'house keys')
+INSERT INTO objects
+VALUES	('w'	,'b'	,'a'	,'bottle'	,'bottle of water')
+,	('k'	,'il'	,'the'	,'keys'		,'house keys')
+,	('c'	,'il'	,'your'	,'coat'		,'winter coat')
 ;
 
 INSERT INTO players
