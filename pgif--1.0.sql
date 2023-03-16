@@ -84,13 +84,17 @@ CREATE FUNCTION pgif_time()
 RETURNS text
 LANGUAGE SQL
 AS $BODY$
-SELECT format('%s %s %s %s'
-, trim(to_char(user_time, 'Day'))
-, regexp_replace(to_char(user_time, 'DD'), '^0', '')
-, trim(to_char(user_time, 'Month'))
-, to_char(user_time, 'YYYY, HH12:MI am'))
-FROM players
-WHERE id = current_user
+WITH a(t) AS (
+  SELECT format('%s %s %s %s'
+  , trim(to_char(user_time, 'Day'))
+  , regexp_replace(to_char(user_time, 'DD'), '^0', '')
+  , trim(to_char(user_time, 'Month'))
+  , to_char(user_time, 'YYYY, HH12:MI am'))
+  FROM players
+  WHERE id = current_user
+)
+SELECT format('--[%s]%s', t, repeat('-', 66 - length(t)))
+FROM a
 $BODY$;
 
 CREATE FUNCTION pgif_format(text)
@@ -111,6 +115,22 @@ WHEN 'L'  THEN 'LOOK'
 WHEN 'Q'  THEN 'QUIT'
 ELSE $1
 END CASE
+$BODY$;
+
+CREATE FUNCTION format_list(text[], text)
+RETURNS text
+LANGUAGE SQL
+AS $BODY$
+SELECT
+CASE
+WHEN $1 IS NULL THEN $2
+WHEN array_length($1,1) = 1 THEN $1[1]
+ELSE format
+( '%s and %s'
+, array_to_string($1[1:array_length($1,1)-1], ', ')
+, $1[array_length($1,1)]
+)
+END
 $BODY$;
 
 --
@@ -140,7 +160,7 @@ DECLARE
 	x text;
 	y text;
 	z text;
-	w text;
+	w text[];
 BEGIN
 	-- (1) description
 	SELECT format('You are in %s.', coalesce(description, title))
@@ -175,7 +195,7 @@ BEGIN
 	AND p.src_dir = d.id
 	AND p.path_name IS NULL;
 	-- (4) objects in sight
-	SELECT string_agg(format('%s %s', o.article, o.description), ', ')
+	SELECT array_agg(format('%s %s', o.article, o.description))
 	INTO w
 	FROM players u
 	, objects o
@@ -183,7 +203,7 @@ BEGIN
 	AND o.location = u.current_place;
 	--
 	RETURN format
-	( E'--[%s]--\n%s\n%s\n%s\n%s'
+	( E'%s\n%s\n%s\n%s\n%s'
 	, pgif_time()
 	, x
 	, y
@@ -193,7 +213,7 @@ BEGIN
 	  END
 	, CASE WHEN w IS NULL
 	  THEN ''
-	  ELSE format('You can see %s.', w)
+	  ELSE format('You can see %s.', format_list(w, 'no objects'))
 	  END
 	);
 END;
@@ -204,17 +224,17 @@ RETURNS text
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	w text;
+	w text[];
 BEGIN
-	SELECT string_agg(format('%s %s', o.article, o.description), ', ')
+	SELECT array_agg(format('%s %s', o.article, o.description))
 	INTO w
 	FROM objects o
 	WHERE o.location = current_user;
 	--
 	RETURN format
-	( E'--[%s]--\nYou are carrying %s.'
+	( E'%s\nYou are carrying %s.'
 	, pgif_time()
-	, coalesce(w, 'no objects')
+	, format_list(w, 'no objects')
 	);
 END;
 $BODY$;
