@@ -144,7 +144,7 @@ AS $BODY$
 SELECT $$Available verbs:
 
 CLOSE (*)         LOOK            TAKE
-DROP (*)          MOVE            USE (*)
+DROP              MOVE            USE (*)
 EXAMINE (*)       OPEN (*)        WAIT (*)
 HELP              QUIT
 INVENTORY         SAY (*)
@@ -275,23 +275,37 @@ LANGUAGE plpgsql
 AS $BODY$
 DECLARE
 	x text;
-	y text;
 BEGIN
-	-- (4) objects in sight
-	SELECT o.id, format('%s %s', o.article, o.description)
-	INTO x, y
+	UPDATE objects o
+	SET location = current_user
 	FROM players u
-	, objects o
-	WHERE u.id = current_user
-	AND o.location = u.current_place
-	AND upper(o.title) = upper(a.words[1]);
+	WHERE o.location = u.current_place
+	AND upper(o.title) = upper(a.words[1])
+	RETURNING format('%s %s', o.article, o.description) INTO x;
 	IF FOUND THEN
-		UPDATE objects
-		SET location = current_user
-		WHERE id = x;
-		a.response := format(E'You take %s.', y);
+		a.response := format(E'You take %s.', x);
 	ELSE
 		a.response := format(E'You cannot see any %s.', lower(a.words[1]));
+	END IF;
+END;
+$BODY$;
+
+CREATE PROCEDURE do_drop(a INOUT action)
+LANGUAGE plpgsql
+AS $BODY$
+DECLARE
+	x text;
+BEGIN
+	UPDATE objects o
+	SET location = u.current_place
+	FROM players u
+	WHERE o.location = current_user
+	AND upper(o.title) = upper(a.words[1])
+	RETURNING format('%s %s', o.article, o.description) INTO x;
+	IF FOUND THEN
+		a.response := format(E'You drop %s.', x);
+	ELSE
+		a.response := format(E'You do not have any %s.', lower(a.words[1]));
 	END IF;
 END;
 $BODY$;
@@ -363,7 +377,7 @@ BEGIN
 	WHEN 'USE' THEN
 		CALL do_missing(a);
 	WHEN 'DROP' THEN
-		CALL do_missing(a);
+		CALL do_drop(a);
 	WHEN 'MOVE' THEN
 		CALL do_move(a);
 	WHEN 'OPEN' THEN
