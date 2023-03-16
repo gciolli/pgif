@@ -51,7 +51,7 @@ SELECT id
 FROM containers
 WHERE title IS NOT NULL;
 
-CREATE TABLE players AS
+CREATE VIEW players AS
 SELECT id
 , current_place
 , user_time
@@ -123,7 +123,7 @@ LANGUAGE SQL
 AS $BODY$
 SELECT $$Available verbs:
 
-CLOSE (*)         LOOK            TAKE (*)
+CLOSE (*)         LOOK            TAKE
 DROP (*)          MOVE            USE (*)
 EXAMINE (*)       OPEN (*)        WAIT (*)
 HELP              QUIT
@@ -250,6 +250,32 @@ BEGIN
 END;
 $BODY$;
 
+CREATE PROCEDURE do_take(a INOUT action)
+LANGUAGE plpgsql
+AS $BODY$
+DECLARE
+	x text;
+	y text;
+BEGIN
+	-- (4) objects in sight
+	SELECT o.id, format('%s %s', o.article, o.description)
+	INTO x, y
+	FROM players u
+	, objects o
+	WHERE u.id = current_user
+	AND o.location = u.current_place
+	AND upper(o.title) = upper(a.words[1]);
+	IF FOUND THEN
+		UPDATE objects
+		SET location = current_user
+		WHERE id = x;
+		a.response := format(E'You take %s.', y);
+	ELSE
+		a.response := format(E'You cannot see any %s.', lower(a.words[1]));
+	END IF;
+END;
+$BODY$;
+
 CREATE PROCEDURE do_missing(a INOUT action)
 LANGUAGE plpgsql
 AS $BODY$
@@ -323,7 +349,7 @@ BEGIN
 	WHEN 'OPEN' THEN
 		CALL do_missing(a);
 	WHEN 'TAKE' THEN
-		CALL do_missing(a);
+		CALL do_take(a);
 	WHEN 'WAIT' THEN
 		CALL do_missing(a);
 	WHEN 'CLOSE' THEN
