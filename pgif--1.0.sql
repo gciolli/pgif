@@ -248,7 +248,7 @@ DECLARE
 	z interval;
 BEGIN
 	SELECT description
-	INTO STRICT y
+	INTO y
 	FROM directions
 	WHERE upper(a.words[1]) = upper(id);
 	SELECT p.tgt, p.path_duration
@@ -265,7 +265,7 @@ BEGIN
 		WHERE id = current_user;
 		a.response := format(E'Moving %s.\n\n%s', y, do_look());
 	ELSE
-		a.response := format(E'Cannot move %s.', y);
+		a.response := format(E'Cannot move %s.', lower(a.words[1]));
 	END IF;
 END;
 $BODY$;
