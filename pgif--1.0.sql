@@ -32,6 +32,34 @@ INSERT INTO directions VALUES
 ,('d'	,'going below'	,'down')
 ;
 
+CREATE TABLE verbs
+( id text PRIMARY KEY
+, missing boolean
+);
+
+WITH a(id) AS (VALUES
+  ('GO')
+, ('DROP')
+, ('HELP')
+, ('LOOK')
+, ('QUIT')
+, ('TAKE')
+, ('INVENTORY')
+) INSERT INTO verbs(id,missing)
+SELECT id, false
+FROM a;
+
+WITH a(id) AS (VALUES
+  ('SAY')
+, ('USE')
+, ('OPEN')
+, ('WAIT')
+, ('CLOSE')
+, ('EXAMINE')
+) INSERT INTO verbs(id,missing)
+SELECT id, true
+FROM a;
+
 --
 -- IF tables
 --
@@ -141,15 +169,22 @@ CREATE FUNCTION do_help()
 RETURNS text
 LANGUAGE SQL
 AS $BODY$
-SELECT $$Available verbs:
+WITH a (id, n) AS (
+SELECT CASE WHEN missing THEN format('%s (*)', id) ELSE id END
+, row_number() OVER (ORDER BY id)
+FROM verbs
+) SELECT format($$Available verbs:
 
-CLOSE (*)         LOOK            TAKE
-DROP              MOVE            USE (*)
-EXAMINE (*)       OPEN (*)        WAIT (*)
-HELP              QUIT
-INVENTORY         SAY (*)
+%s
 
 (*) = not implemented yet$$
+, string_agg
+( format('%-20s   %-20s   %-20s', a.id, a1.id, a2.id), E'\n'
+  ORDER BY a.n ))
+FROM a
+JOIN a AS a1 ON a.n + 5 = a1.n
+LEFT JOIN a AS a2 ON a.n + 10 = a2.n
+WHERE a.n <= 5
 $BODY$;
 
 CREATE FUNCTION do_look()
