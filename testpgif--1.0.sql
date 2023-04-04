@@ -3,7 +3,7 @@
 
 TRUNCATE objects, paths, containers CASCADE;
 
-INSERT INTO locations VALUES
+INSERT INTO locations (id, name) VALUES
 ('il'	,'the initial location'),
 ('a'	,'the Above'),
 ('b'	,'the Below'),
@@ -42,10 +42,10 @@ INSERT INTO paths(id, src, src_dir, tgt, tgt_dir, path_duration, path_name)
 VALUES	('s1'	,'il'	,'ne'	,'b'	,'sw'	,'2 minutes'	,'a downward slide')
 ;
 
-INSERT INTO objects
-VALUES	('w'	,'b'	,'a'	,'bottle'	,'bottle of water')
-,	('k'	,'il'	,'the'	,'keys'		,'house keys')
-,	('c'	,'il'	,'your'	,'coat'		,'winter coat')
+INSERT INTO objects(id, current_location, name, article, description)
+VALUES	('w'	,'b'	,'bottle'	,'a'	,'bottle of water')
+,	('k'	,'il'	,'keys'		,'the'	,'house keys')
+,	('c'	,'il'	,'coat'		,'your'	,'winter coat')
 ;
 
 CREATE PROCEDURE pgif_init()
@@ -53,8 +53,17 @@ LANGUAGE plpgsql
 AS $BODY$
 BEGIN
 	TRUNCATE actions;
-	DELETE FROM players;
-	INSERT INTO players
-	SELECT current_user, 'il', timestamp '1996-07-09 06:22:35 UTC';
+	DELETE FROM characters;
+	INSERT INTO characters
+	( id
+	, name
+	, current_location
+	, own_time
+	) SELECT
+	  current_user
+	, current_user
+	, 'il'
+	, timestamp '1996-07-09 06:22:35 UTC'
+	;
 END;
 $BODY$;

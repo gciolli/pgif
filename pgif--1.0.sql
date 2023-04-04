@@ -2,7 +2,7 @@
 \echo Use "CREATE EXTENSION pgif" to load this file. \quit
 
 --
--- Basic IF data structures
+-- IF schema
 --
 
 CREATE TABLE actions
@@ -89,48 +89,60 @@ SELECT id
 FROM a;
 
 --
--- IF tables
+-- Objects have a location, an article and a name. They can optionally
+-- have a description, and be mobile.
+--
+-- A container is an object that has the extra ability to host other
+-- objects. It can optionally be opaque, meaning that it does not
+-- reveal its contents until it is examined. Also, you need to examine
+-- an object to determine whether it is a container, unless it is not
+-- opaque, in which case you can see its contents.
+--
+-- A character is a container which is "animated", i.e. with the extra
+-- ability to move spontaneously. Therefore it has its own time. While
+-- it is possible for a mobile container to be moved from one location
+-- to another, that fact alone does not make it animated.
+--
+-- A location is a container with the extra ability to host a
+-- character.
+--
+-- Note that there can be containers that are neither characters nor
+-- locations, and objects that are not containers.
 --
 
-CREATE TABLE containers
+CREATE TABLE objects
 ( id text PRIMARY KEY
-, title text
+, name text
+, article text
+, current_location text
 , description text
-, current_place text REFERENCES containers(id)
-, user_time timestamp(0)
+, is_mobile bool DEFAULT true
 );
 
-CREATE VIEW locations AS
-SELECT id
-, title
-, description
-FROM containers
-WHERE title IS NOT NULL;
+CREATE TABLE containers
+( is_opaque bool DEFAULT false
+) INHERITS (objects);
 
-CREATE VIEW players AS
-SELECT id
-, current_place
-, user_time
-FROM containers
-WHERE user_time IS NOT NULL;
+CREATE TABLE locations
+( UNIQUE (id)
+) INHERITS (containers);
+
+ALTER TABLE objects
+ADD FOREIGN KEY (current_location) REFERENCES locations(id);
+
+CREATE TABLE characters
+( own_time timestamp(0)
+) INHERITS (containers);
 
 CREATE TABLE paths
 ( id text PRIMARY KEY
-, src     text NOT NULL REFERENCES containers(id)
+, src     text NOT NULL REFERENCES locations(id)
 , src_dir text NOT NULL REFERENCES directions(id)
-, tgt     text NOT NULL REFERENCES containers(id)
+, tgt     text NOT NULL REFERENCES locations(id)
 , tgt_dir text NOT NULL REFERENCES directions(id)
 , path_name text
 , path_duration interval
 , UNIQUE (src, src_dir, tgt, tgt_dir)
-);
-
-CREATE TABLE objects
-( id text PRIMARY KEY
-, location text REFERENCES containers(id)
-, article text NOT NULL
-, title text NOT NULL
-, description text
 );
 
 CREATE TABLE barriers
@@ -141,7 +153,7 @@ CREATE TABLE barriers
 );
 
 --
--- IF utilities
+-- Utility functions
 --
 
 CREATE FUNCTION pgif_time()
@@ -150,11 +162,11 @@ LANGUAGE SQL
 AS $BODY$
 WITH a(t) AS (
   SELECT format('%s %s %s %s'
-  , trim(to_char(user_time, 'Day'))
-  , regexp_replace(to_char(user_time, 'DD'), '^0', '')
-  , trim(to_char(user_time, 'Month'))
-  , to_char(user_time, 'YYYY, HH12:MI am'))
-  FROM players
+  , trim(to_char(own_time, 'Day'))
+  , regexp_replace(to_char(own_time, 'DD'), '^0', '')
+  , trim(to_char(own_time, 'Month'))
+  , to_char(own_time, 'YYYY, HH12:MI am'))
+  FROM characters
   WHERE id = current_user
 )
 SELECT format('--[%s]%s', t, repeat('-', 66 - length(t)))
@@ -166,19 +178,6 @@ RETURNS text
 LANGUAGE SQL
 AS $BODY$
 SELECT format(E'\n%s\n\n> ', $1)
-$BODY$;
-
-CREATE FUNCTION expand_abbreviation(text)
-RETURNS text
-LANGUAGE SQL
-AS $BODY$
-SELECT CASE $1
-WHEN 'H'  THEN 'HELP'
-WHEN 'I'  THEN 'INVENTORY'
-WHEN 'L'  THEN 'LOOK'
-WHEN 'Q'  THEN 'QUIT'
-ELSE $1
-END
 $BODY$;
 
 CREATE FUNCTION format_list(text[], text)
@@ -243,11 +242,11 @@ DECLARE
 	w text[];
 BEGIN
 	-- (1) description
-	SELECT format('You are in %s.', coalesce(description, title))
+	SELECT format('You are in %s.', coalesce(l.description, l.name))
 	INTO STRICT x
 	FROM locations l
-	, players u
-	WHERE l.id = u.current_place
+	, characters u
+	WHERE l.id = u.current_location
 	AND u.id = current_user;
 	-- (2) named exits
 	SELECT string_agg
@@ -258,8 +257,8 @@ BEGIN
 	  , format(d.format, d.description)
 	  ), E'\n')
 	INTO y
-	FROM players u
-	JOIN paths p ON p.src = u.current_place
+	FROM characters u
+	JOIN paths p ON p.src = u.current_location
 	JOIN directions d ON p.src_dir = d.id
 	LEFT JOIN barriers b ON p.id = b.id
 	WHERE u.id = current_user
@@ -267,20 +266,21 @@ BEGIN
 	-- (3) anonymous exits
 	SELECT string_agg(d.description, ', ')
 	INTO z
-	FROM players u
+	FROM characters u
 	, paths p
 	, directions d
 	WHERE u.id = current_user
-	AND p.src = u.current_place
+	AND p.src = u.current_location
 	AND p.src_dir = d.id
 	AND p.path_name IS NULL;
 	-- (4) objects in sight
 	SELECT array_agg(format('%s %s', o.article, o.description))
 	INTO w
-	FROM players u
+	FROM characters u
 	, objects o
 	WHERE u.id = current_user
-	AND o.location = u.current_place;
+	AND o.id != current_user
+	AND o.current_location = u.current_location;
 	--
 	RETURN format
 	( E'%s\n%s\n%s\n%s\n%s'
@@ -309,7 +309,7 @@ BEGIN
 	SELECT array_agg(format('%s %s', o.article, o.description))
 	INTO w
 	FROM objects o
-	WHERE o.location = current_user;
+	WHERE o.current_location = current_user;
 	--
 	RETURN format
 	( E'%s\nYou are carrying %s.'
@@ -333,17 +333,17 @@ BEGIN
 	WHERE upper(a.words[1]) = upper(id);
 	SELECT p.tgt, p.path_duration
 	INTO x, z
-	FROM players u
+	FROM characters u
 	JOIN paths p
-	  ON p.src = u.current_place
+	  ON p.src = u.current_location
 	 AND upper(p.src_dir) = upper(a.words[1])
 	WHERE u.id = current_user;
 	IF a.words = '{}' THEN
 		a.response := 'GO requires a direction.';
 	ELSIF FOUND THEN
-		UPDATE players
-		SET current_place = x
-		, user_time = user_time + z
+		UPDATE characters
+		SET current_location = x
+		, own_time = own_time + z
 		WHERE id = current_user;
 		a.response := format(E'Going %s.', y);
 		a.look_after := true;
@@ -360,14 +360,14 @@ DECLARE
 	x text;
 BEGIN
 	UPDATE objects o
-	SET location = current_user
-	FROM players u
-	WHERE o.location = u.current_place
-	AND upper(o.title) = upper(a.words[1])
+	SET current_location = current_user
+	FROM characters u
+	WHERE o.current_location = u.current_location
+	AND upper(o.name) = upper(a.words[1])
 	RETURNING format('%s %s', o.article, o.description) INTO x;
 	IF FOUND THEN
-		UPDATE players
-		SET user_time = user_time + '2 minutes'
+		UPDATE characters
+		SET own_time = own_time + '2 minutes'
 		WHERE id = current_user;
 		a.response := format(E'You take %s.', x);
 		a.look_after := true;
@@ -384,14 +384,14 @@ DECLARE
 	x text;
 BEGIN
 	UPDATE objects o
-	SET location = u.current_place
-	FROM players u
-	WHERE o.location = current_user
-	AND upper(o.title) = upper(a.words[1])
+	SET current_location = u.current_location
+	FROM characters u
+	WHERE o.current_location = current_user
+	AND upper(o.name) = upper(a.words[1])
 	RETURNING format('%s %s', o.article, o.description) INTO x;
 	IF FOUND THEN
-		UPDATE players
-		SET user_time = user_time + '2 minutes'
+		UPDATE characters
+		SET own_time = own_time + '2 minutes'
 		WHERE id = current_user;
 		a.response := format(E'You drop %s.', x);
 		a.look_after := true;
@@ -408,8 +408,8 @@ DECLARE
 	x interval;
 BEGIN
 	x := COALESCE(NULLIF(array_to_string(a.words, ' '), ''), '5 minutes');
-	UPDATE players
-	SET user_time = user_time + x
+	UPDATE characters
+	SET own_time = own_time + x
 	WHERE id = current_user;
 	a.response := CASE WHEN x > '0 minutes' THEN 'You wait.' ELSE '' END;
 	a.look_after := true;
@@ -494,8 +494,8 @@ BEGIN
 		END IF;
 	WHEN NOT v_he THEN
 		-- Passage of time
-		UPDATE players
-		SET user_time = user_time + coalesce(v_duration, '0 minutes')
+		UPDATE characters
+		SET own_time = own_time + coalesce(v_duration, '0 minutes')
 		WHERE id = current_user;
 		-- Display
 		dispatch_sql := format('SELECT * FROM do_%s()', lower(v_id));
