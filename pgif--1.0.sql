@@ -8,9 +8,10 @@
 CREATE TYPE action AS
 ( verb text
 , words text[]
+, matches text
 , sentence text
 , response text
-, duration interval
+, look_after boolean
 );
 
 CREATE TABLE directions
@@ -34,30 +35,51 @@ INSERT INTO directions VALUES
 
 CREATE TABLE verbs
 ( id text PRIMARY KEY
-, missing boolean
+, has_effect boolean
+, default_duration interval
 );
+
+COMMENT ON COLUMN verbs.has_effect IS 
+'NULL denotes verbs that are not implemented yet';
+
+--
+-- Actions without effects
+--
+
+WITH a(id, default_duration) AS (VALUES
+  ('HELP', '0 minutes')
+, ('LOOK', '3 minutes')
+, ('QUIT', '0 minutes')
+, ('INVENTORY', '1 minute')
+) INSERT INTO verbs(id, has_effect, default_duration)
+SELECT id, false, default_duration :: interval
+FROM a;
+
+--
+-- Actions with effects
+--
 
 WITH a(id) AS (VALUES
   ('GO')
 , ('DROP')
-, ('HELP')
-, ('LOOK')
-, ('QUIT')
 , ('TAKE')
-, ('INVENTORY')
-) INSERT INTO verbs(id,missing)
-SELECT id, false
+, ('WAIT')
+) INSERT INTO verbs(id, has_effect)
+SELECT id, true
 FROM a;
+
+--
+-- Actions not yet implemented
+--
 
 WITH a(id) AS (VALUES
   ('SAY')
 , ('USE')
 , ('OPEN')
-, ('WAIT')
 , ('CLOSE')
 , ('EXAMINE')
-) INSERT INTO verbs(id,missing)
-SELECT id, true
+) INSERT INTO verbs(id)
+SELECT id
 FROM a;
 
 --
@@ -87,13 +109,14 @@ FROM containers
 WHERE user_time IS NOT NULL;
 
 CREATE TABLE paths
-( src     text REFERENCES containers(id)
-, src_dir text REFERENCES directions(id)
-, tgt     text REFERENCES containers(id)
-, tgt_dir text REFERENCES directions(id)
+( id text PRIMARY KEY
+, src     text NOT NULL REFERENCES containers(id)
+, src_dir text NOT NULL REFERENCES directions(id)
+, tgt     text NOT NULL REFERENCES containers(id)
+, tgt_dir text NOT NULL REFERENCES directions(id)
 , path_name text
 , path_duration interval
-, PRIMARY KEY (src, src_dir, tgt, tgt_dir)
+, UNIQUE (src, src_dir, tgt, tgt_dir)
 );
 
 CREATE TABLE objects
@@ -102,6 +125,13 @@ CREATE TABLE objects
 , article text NOT NULL
 , title text NOT NULL
 , description text
+);
+
+CREATE TABLE barriers
+( id text PRIMARY KEY REFERENCES paths(id)
+, barrier_name text NOT NULL
+, auto_close boolean DEFAULT false
+, opening_time interval
 );
 
 --
@@ -142,7 +172,7 @@ WHEN 'I'  THEN 'INVENTORY'
 WHEN 'L'  THEN 'LOOK'
 WHEN 'Q'  THEN 'QUIT'
 ELSE $1
-END CASE
+END
 $BODY$;
 
 CREATE FUNCTION format_list(text[], text)
@@ -170,8 +200,10 @@ RETURNS text
 LANGUAGE SQL
 AS $BODY$
 WITH a (id, n) AS (
-SELECT CASE WHEN missing THEN format('%s (*)', id) ELSE id END
-, row_number() OVER (ORDER BY id)
+SELECT CASE
+WHEN has_effect IS NULL THEN format('%s (*)', id)
+ELSE id
+END, row_number() OVER (ORDER BY id)
 FROM verbs
 ) SELECT format($$Available verbs:
 
@@ -185,6 +217,13 @@ FROM a
 JOIN a AS a1 ON a.n + 5 = a1.n
 LEFT JOIN a AS a2 ON a.n + 10 = a2.n
 WHERE a.n <= 5
+$BODY$;
+
+CREATE FUNCTION do_quit()
+RETURNS text
+LANGUAGE SQL
+AS $BODY$
+SELECT NULL;
 $BODY$;
 
 CREATE FUNCTION do_look()
@@ -207,17 +246,17 @@ BEGIN
 	-- (2) named exits
 	SELECT string_agg
 	( format
-	  ( 'There is %s %s.'
+	  ( 'There is %s%s %s.'
 	  , p.path_name
+	  , COALESCE(' with ' || b.barrier_name, '')
 	  , format(d.format, d.description)
 	  ), E'\n')
 	INTO y
 	FROM players u
-	, paths p
-	, directions d
+	JOIN paths p ON p.src = u.current_place
+	JOIN directions d ON p.src_dir = d.id
+	LEFT JOIN barriers b ON p.id = b.id
 	WHERE u.id = current_user
-	AND p.src = u.current_place
-	AND p.src_dir = d.id
 	AND p.path_name IS NOT NULL;
 	-- (3) anonymous exits
 	SELECT string_agg(d.description, ', ')
@@ -274,7 +313,7 @@ BEGIN
 END;
 $BODY$;
 
-CREATE PROCEDURE do_move(a INOUT action)
+CREATE FUNCTION do_go(a INOUT action)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
@@ -293,19 +332,22 @@ BEGIN
 	  ON p.src = u.current_place
 	 AND upper(p.src_dir) = upper(a.words[1])
 	WHERE u.id = current_user;
-	IF FOUND THEN
+	IF a.words = '{}' THEN
+		a.response := 'GO requires a direction.';
+	ELSIF FOUND THEN
 		UPDATE players
 		SET current_place = x
 		, user_time = user_time + z
 		WHERE id = current_user;
-		a.response := format(E'Moving %s.\n\n%s', y, do_look());
+		a.response := format(E'Going %s.', y);
+		a.look_after := true;
 	ELSE
-		a.response := format(E'Cannot move %s.', lower(a.words[1]));
+		a.response := format(E'Cannot go %s.', lower(a.words[1]));
 	END IF;
 END;
 $BODY$;
 
-CREATE PROCEDURE do_take(a INOUT action)
+CREATE FUNCTION do_take(a INOUT action)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
@@ -318,14 +360,18 @@ BEGIN
 	AND upper(o.title) = upper(a.words[1])
 	RETURNING format('%s %s', o.article, o.description) INTO x;
 	IF FOUND THEN
+		UPDATE players
+		SET user_time = user_time + '2 minutes'
+		WHERE id = current_user;
 		a.response := format(E'You take %s.', x);
+		a.look_after := true;
 	ELSE
 		a.response := format(E'You cannot see any %s.', lower(a.words[1]));
 	END IF;
 END;
 $BODY$;
 
-CREATE PROCEDURE do_drop(a INOUT action)
+CREATE FUNCTION do_drop(a INOUT action)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
@@ -338,18 +384,37 @@ BEGIN
 	AND upper(o.title) = upper(a.words[1])
 	RETURNING format('%s %s', o.article, o.description) INTO x;
 	IF FOUND THEN
+		UPDATE players
+		SET user_time = user_time + '2 minutes'
+		WHERE id = current_user;
 		a.response := format(E'You drop %s.', x);
+		a.look_after := true;
 	ELSE
 		a.response := format(E'You do not have any %s.', lower(a.words[1]));
 	END IF;
 END;
 $BODY$;
 
-CREATE PROCEDURE do_missing(a INOUT action)
+CREATE FUNCTION do_wait(a INOUT action)
+LANGUAGE plpgsql
+AS $BODY$
+DECLARE
+	x interval;
+BEGIN
+	x := COALESCE(NULLIF(array_to_string(a.words, ' '), ''), '5 minutes');
+	UPDATE players
+	SET user_time = user_time + x
+	WHERE id = current_user;
+	a.response := CASE WHEN x > '0 minutes' THEN 'You wait.' ELSE '' END;
+	a.look_after := true;
+END;
+$BODY$;
+
+CREATE FUNCTION do_missing(a INOUT action)
 LANGUAGE plpgsql
 AS $BODY$
 BEGIN
-	a.response := format('Apologies: %s not yet implemented.', a.verb);
+	a.response := format('Apologies: %s not yet implemented.', a.matches);
 END;
 $BODY$;
 
@@ -372,11 +437,13 @@ BEGIN
 
 	-- (2) split in words
 	words := string_to_array(upper(trim(a.sentence)), ' ');
-	IF words[1:1] <@ '{N,S,E,W,NE,SE,SW,NW,U,D}' THEN
-		a.verb := 'MOVE';
+	IF words = '{}' THEN
+		a.verb := 'HELP';
+	ELSIF words[1:1] <@ '{N,S,E,W,NE,SE,SW,NW,U,D}' THEN
+		a.verb := 'GO';
 		a.words := words[1:1];
 	ELSE
-		a.verb := expand_abbreviation(words[1]);
+		a.verb := words[1];
 		a.words := words[2:];
 	END IF;
 
@@ -384,59 +451,50 @@ BEGIN
 END;
 $BODY$;
 
-CREATE PROCEDURE effect(a INOUT action)
+CREATE PROCEDURE dispatch(a INOUT action)
 LANGUAGE plpgsql
 AS $BODY$
+DECLARE
+	v_id text;
+	v_he boolean;
+	v_regexp text := format('^%s', a.verb);
+	v_match_count bigint;
+	v_duration interval;
+	dispatch_sql text;
 BEGIN
-	a.duration := '0 minutes';
-	CASE a.verb
-	--
-	-- Read-only actions
-	--
-	WHEN 'HELP' THEN
-		a.duration := '3 minutes';
-		a.response := do_help();
-	WHEN 'LOOK' THEN
-		a.duration := '3 minutes';
-		a.response := do_look();
-	WHEN 'QUIT' THEN
-		NULL;
-	WHEN 'INVENTORY' THEN
-		a.duration := '1 minutes';
-		a.response := do_inventory();
-	--
-	-- Write actions
-	--
-	WHEN 'SAY' THEN
-		CALL do_missing(a);
-	WHEN 'USE' THEN
-		CALL do_missing(a);
-	WHEN 'DROP' THEN
-		CALL do_drop(a);
-	WHEN 'MOVE' THEN
-		CALL do_move(a);
-	WHEN 'OPEN' THEN
-		CALL do_missing(a);
-	WHEN 'TAKE' THEN
-		CALL do_take(a);
-	WHEN 'WAIT' THEN
-		CALL do_missing(a);
-	WHEN 'CLOSE' THEN
-		CALL do_missing(a);
-	WHEN 'EXAMINE' THEN
-		CALL do_missing(a);
-	--
-	-- None of the above
-	--
-	ELSE
+	SELECT string_agg(id, ' '), count(*)
+	INTO a.matches, v_match_count
+	FROM verbs
+	WHERE id ~* v_regexp;
+	SELECT id, has_effect, default_duration
+	INTO v_id, v_he, v_duration
+	FROM verbs
+	WHERE id ~* v_regexp;
+	CASE
+	WHEN v_match_count = 0 THEN
 		a.response := format('ERROR: unknown verb «%s»', a.verb);
+	WHEN v_match_count > 1 THEN
+		a.response := format
+		( 'ERROR: ambiguous verb «%s» could be: %s'
+		, a.verb, a.matches);
+	WHEN v_he IS NULL THEN
+		SELECT * INTO STRICT a FROM do_missing(a);
+	WHEN v_he THEN
+		a.look_after := false;
+		dispatch_sql := format('SELECT * FROM do_%s($1)', lower(v_id));
+		EXECUTE dispatch_sql INTO STRICT a USING a;
+		IF a.look_after THEN
+			a.response := format(E'%s\n\n%s', a.response, do_look());
+		END IF;
+	WHEN NOT v_he THEN
+		-- Passage of time
+		UPDATE players
+		SET user_time = user_time + coalesce(v_duration, '0 minutes')
+		WHERE id = current_user;
+		-- Display
+		dispatch_sql := format('SELECT * FROM do_%s()', lower(v_id));
+		EXECUTE dispatch_sql INTO STRICT a.response;
 	END CASE;
-	--
-	-- Passage of time
-	--
-	UPDATE players
-	SET user_time = user_time + a.duration
-	WHERE id = current_user;
 END;
 $BODY$;
 
@@ -450,8 +508,8 @@ DECLARE
 	next_action action;
 BEGIN
 	next_action := parse(sentence);
-	CALL effect(next_action);
-	stop := next_action.verb = 'QUIT';
+	CALL dispatch(next_action);
+	stop := next_action.matches = 'QUIT';
 	response := pgif_format(next_action.response);
 	RETURN;
 END;
