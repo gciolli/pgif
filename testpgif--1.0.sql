@@ -1,14 +1,6 @@
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION testpgif" to load this file. \quit
 
-CREATE PROCEDURE testpgif(text)
-LANGUAGE plpgsql
-AS $BODY$
-BEGIN
-	CALL pgif($1);
-END;
-$BODY$;
-
 TRUNCATE objects, paths, containers CASCADE;
 
 INSERT INTO locations VALUES
@@ -56,5 +48,13 @@ VALUES	('w'	,'b'	,'a'	,'bottle'	,'bottle of water')
 ,	('c'	,'il'	,'your'	,'coat'		,'winter coat')
 ;
 
-INSERT INTO players
-SELECT current_user, 'il', timestamp '1996-07-09 06:22:35 UTC';
+CREATE PROCEDURE pgif_init()
+LANGUAGE plpgsql
+AS $BODY$
+BEGIN
+	TRUNCATE actions;
+	DELETE FROM players;
+	INSERT INTO players
+	SELECT current_user, 'il', timestamp '1996-07-09 06:22:35 UTC';
+END;
+$BODY$;

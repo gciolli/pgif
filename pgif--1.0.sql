@@ -2,17 +2,23 @@
 \echo Use "CREATE EXTENSION pgif" to load this file. \quit
 
 --
--- Basic IF data types
+-- Basic IF data structures
 --
 
-CREATE TYPE action AS
-( verb text
+CREATE TABLE actions
+( id SERIAL PRIMARY KEY
+, verb text
 , words text[]
 , matches text
 , sentence text
 , response text
 , look_after boolean
 );
+
+CREATE VIEW current_action AS
+SELECT *
+FROM actions
+ORDER BY id DESC LIMIT 1;
 
 CREATE TABLE directions
 ( id text PRIMARY KEY
@@ -313,7 +319,7 @@ BEGIN
 END;
 $BODY$;
 
-CREATE FUNCTION do_go(a INOUT action)
+CREATE FUNCTION do_go(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
@@ -347,7 +353,7 @@ BEGIN
 END;
 $BODY$;
 
-CREATE FUNCTION do_take(a INOUT action)
+CREATE FUNCTION do_take(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
@@ -371,7 +377,7 @@ BEGIN
 END;
 $BODY$;
 
-CREATE FUNCTION do_drop(a INOUT action)
+CREATE FUNCTION do_drop(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
@@ -395,7 +401,7 @@ BEGIN
 END;
 $BODY$;
 
-CREATE FUNCTION do_wait(a INOUT action)
+CREATE FUNCTION do_wait(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
@@ -410,7 +416,7 @@ BEGIN
 END;
 $BODY$;
 
-CREATE FUNCTION do_missing(a INOUT action)
+CREATE FUNCTION do_missing(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 BEGIN
@@ -423,11 +429,11 @@ $BODY$;
 --
 
 CREATE FUNCTION parse(text)
-RETURNS action
+RETURNS actions
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	a action;
+	a actions;
 	words text[];
 BEGIN
 	-- (1) sanitise input
@@ -451,7 +457,7 @@ BEGIN
 END;
 $BODY$;
 
-CREATE PROCEDURE dispatch(a INOUT action)
+CREATE PROCEDURE dispatch(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
@@ -505,10 +511,24 @@ CREATE FUNCTION main_loop
 ) LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	next_action action;
+	next_action actions;
 BEGIN
 	next_action := parse(sentence);
 	CALL dispatch(next_action);
+	INSERT INTO actions
+	( verb
+	, words
+	, matches
+	, sentence
+	, response
+	, look_after
+	) SELECT
+	  (next_action).verb
+	, (next_action).words
+	, (next_action).matches
+	, (next_action).sentence
+	, (next_action).response
+	, (next_action).look_after;
 	stop := next_action.matches = 'QUIT';
 	response := pgif_format(next_action.response);
 	RETURN;
