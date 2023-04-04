@@ -134,6 +134,18 @@ CREATE TABLE characters
 ( own_time timestamp(0)
 ) INHERITS (containers);
 
+--
+-- Paths connect locations across directions. They are one-way: a
+-- two-way path is represented by two separate records, where the
+-- identifier of the second record is equal to the identifier of the
+-- first record plus an apostrophe added as a suffix.
+--
+-- A path can optionally have a barrier, which can be opened and
+-- closed. We still need to decide how to represent two-way doors,
+-- perhaps join them using a condition that uses the identifier with
+-- the addition of a suffix.
+--
+
 CREATE TABLE paths
 ( id text PRIMARY KEY
 , src     text NOT NULL REFERENCES locations(id)
@@ -151,6 +163,36 @@ CREATE TABLE barriers
 , auto_close boolean DEFAULT false
 , opening_time interval
 );
+
+CREATE VIEW characters_paths_barriers AS
+SELECT c.id AS character_id
+, p.path_name
+, b.barrier_name
+, d.format AS direction_format
+, d.description AS direction_description
+, p.src_dir
+, p.tgt
+, p.path_duration
+FROM characters c
+JOIN paths p ON p.src = c.current_location
+JOIN directions d ON d.id = p.src_dir
+LEFT JOIN barriers b ON b.id = p.id;
+
+CREATE VIEW characters_locations AS
+SELECT c.id AS character_id
+, l.description AS location_description
+, l.name AS location_name
+FROM characters c
+JOIN locations l ON l.id = c.current_location;
+
+CREATE VIEW characters_objects AS
+SELECT c.id AS character_id
+, o.id AS object_id
+, o.article AS object_article
+, o.description AS object_description
+FROM characters c
+JOIN objects o ON o.current_location = c.current_location
+WHERE o.id != c.id;
 
 --
 -- Utility functions
@@ -242,45 +284,35 @@ DECLARE
 	w text[];
 BEGIN
 	-- (1) description
-	SELECT format('You are in %s.', coalesce(l.description, l.name))
+	SELECT format('You are in %s.'
+		, coalesce(location_description, location_name))
 	INTO STRICT x
-	FROM locations l
-	, characters u
-	WHERE l.id = u.current_location
-	AND u.id = current_user;
+	FROM characters_locations
+	WHERE character_id = current_user;
 	-- (2) named exits
 	SELECT string_agg
 	( format
 	  ( 'There is %s%s %s.'
-	  , p.path_name
-	  , COALESCE(' with ' || b.barrier_name, '')
-	  , format(d.format, d.description)
+	  , path_name
+	  , COALESCE(' with ' || barrier_name, '')
+	  , format(direction_format, direction_description)
 	  ), E'\n')
 	INTO y
-	FROM characters u
-	JOIN paths p ON p.src = u.current_location
-	JOIN directions d ON p.src_dir = d.id
-	LEFT JOIN barriers b ON p.id = b.id
-	WHERE u.id = current_user
-	AND p.path_name IS NOT NULL;
+	FROM characters_paths_barriers
+	WHERE character_id = current_user
+	AND path_name IS NOT NULL;
 	-- (3) anonymous exits
-	SELECT string_agg(d.description, ', ')
+	SELECT string_agg(direction_description, ', ')
 	INTO z
-	FROM characters u
-	, paths p
-	, directions d
-	WHERE u.id = current_user
-	AND p.src = u.current_location
-	AND p.src_dir = d.id
-	AND p.path_name IS NULL;
+	FROM characters_paths_barriers
+	WHERE character_id = current_user
+	AND path_name IS NULL;
 	-- (4) objects in sight
-	SELECT array_agg(format('%s %s', o.article, o.description))
+	SELECT array_agg(format('%s %s'
+		, object_article, object_description))
 	INTO w
-	FROM characters u
-	, objects o
-	WHERE u.id = current_user
-	AND o.id != current_user
-	AND o.current_location = u.current_location;
+	FROM characters_objects
+	WHERE character_id = current_user;
 	--
 	RETURN format
 	( E'%s\n%s\n%s\n%s\n%s'
@@ -331,13 +363,11 @@ BEGIN
 	INTO y
 	FROM directions
 	WHERE upper(a.words[1]) = upper(id);
-	SELECT p.tgt, p.path_duration
+	SELECT tgt, path_duration
 	INTO x, z
-	FROM characters u
-	JOIN paths p
-	  ON p.src = u.current_location
-	 AND upper(p.src_dir) = upper(a.words[1])
-	WHERE u.id = current_user;
+	FROM characters_paths_barriers
+	WHERE character_id = current_user
+	AND upper(src_dir) = upper(a.words[1]);
 	IF a.words = '{}' THEN
 		a.response := 'GO requires a direction.';
 	ELSIF FOUND THEN
@@ -348,7 +378,8 @@ BEGIN
 		a.response := format(E'Going %s.', y);
 		a.look_after := true;
 	ELSE
-		a.response := format(E'Cannot go %s.', lower(a.words[1]));
+		a.response := format(E'Cannot go %s.'
+			, coalesce(y, format('«%s»', lower(a.words[1]))));
 	END IF;
 END;
 $BODY$;
