@@ -9,5 +9,5 @@ with an explicit dependence on `pgif`.
 # Quickstart
 
     sudo make install
-	psql -c "create extension testpgif cascade"
-	psql -f start.sql
+    psql -c "create extension testpgif cascade"
+    psql -f start.sql
