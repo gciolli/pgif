@@ -68,8 +68,10 @@ FROM a;
 WITH a(id) AS (VALUES
   ('GO')
 , ('DROP')
+, ('OPEN')
 , ('TAKE')
 , ('WAIT')
+, ('CLOSE')
 ) INSERT INTO verbs(id, has_effect)
 SELECT id, true
 FROM a;
@@ -81,8 +83,6 @@ FROM a;
 WITH a(id) AS (VALUES
   ('SAY')
 , ('USE')
-, ('OPEN')
-, ('CLOSE')
 , ('EXAMINE')
 ) INSERT INTO verbs(id)
 SELECT id
@@ -193,6 +193,7 @@ SELECT c.id AS character_id
 , p.path_id
 , p.path_name
 , p.path_duration
+, p.id AS barrier_id
 , b.barrier_name
 , b.is_open AS barrier_is_open
 , b.auto_close AS barrier_auto_close
@@ -320,10 +321,16 @@ BEGIN
 	-- (2) named exits
 	SELECT string_agg
 	( format
-	  ( 'There is %s%s %s.'
+	  ( 'There is %s%s %s%s'
 	  , path_name
 	  , COALESCE(' with ' || barrier_name, '')
 	  , format(direction_format, direction_description)
+	  , CASE WHEN barrier_name IS NULL THEN '.' ELSE
+	    format
+	    ( E'; %s is %s.', barrier_name
+	    , CASE WHEN barrier_is_open THEN 'open' ELSE 'closed'
+	      END )
+	    END
 	  ), E'\n')
 	INTO y
 	FROM characters_paths_barriers
@@ -457,6 +464,92 @@ BEGIN
 	ELSE
 		a.response := format(E'You do not have any %s.', lower(a.words[1]));
 	END IF;
+END;
+$BODY$;
+
+CREATE FUNCTION do_open(a INOUT actions)
+LANGUAGE plpgsql
+AS $BODY$
+DECLARE
+	v_dt interval;
+	v_ids text;
+	v_regexp text := array_to_string(a.words, ' ');
+	v_match_count bigint;
+	v_barrier_name text;
+BEGIN
+	SELECT string_agg(barrier_id, ' '), count(*)
+	INTO v_ids, v_match_count
+	FROM characters_paths_barriers v
+	WHERE v.character_id = current_user
+	AND v.barrier_name ~* v_regexp
+	AND NOT v.barrier_is_open;
+	CASE
+	WHEN v_match_count = 0 THEN
+		a.response := format('ERROR: cannot match «%s»', v_regexp);
+	WHEN v_match_count > 1 THEN
+		a.response := format
+		( 'ERROR: ambiguous term «%s» could be any of: %s'
+		, v_regexp, v_ids);
+	ELSE
+		UPDATE barriers b
+		SET is_open = true
+		WHERE b.id = v_ids
+		RETURNING opening_time, barrier_name
+		INTO STRICT v_dt, v_barrier_name;
+		IF FOUND THEN
+			UPDATE characters
+			SET own_time = own_time + v_dt
+			WHERE id = current_user;
+			a.response := format(E'You open %s.'
+				, v_barrier_name);
+		ELSE
+			a.response := format(E'You could not open «%s».'
+				, v_regexp);
+		END IF;
+	END CASE;
+END;
+$BODY$;
+
+CREATE FUNCTION do_close(a INOUT actions)
+LANGUAGE plpgsql
+AS $BODY$
+DECLARE
+	v_dt interval;
+	v_ids text;
+	v_regexp text := array_to_string(a.words, ' ');
+	v_match_count bigint;
+	v_barrier_name text;
+BEGIN
+	SELECT string_agg(barrier_id, ' '), count(*)
+	INTO v_ids, v_match_count
+	FROM characters_paths_barriers v
+	WHERE v.character_id = current_user
+	AND v.barrier_name ~* v_regexp
+	AND v.barrier_is_open;
+	CASE
+	WHEN v_match_count = 0 THEN
+		a.response := format('ERROR: cannot match «%s»', v_regexp);
+	WHEN v_match_count > 1 THEN
+		a.response := format
+		( 'ERROR: ambiguous term «%s» could be any of: %s'
+		, v_regexp, v_ids);
+	ELSE
+		UPDATE barriers b
+		SET is_open = false
+		WHERE b.id = v_ids
+		RETURNING barrier_name
+		INTO STRICT v_barrier_name;
+		IF FOUND THEN
+			UPDATE characters
+			SET own_time = own_time + '1 minutes'
+			WHERE id = current_user;
+			a.response := format(E'You close %s.'
+				, v_barrier_name);
+		ELSE
+			a.response := format(E'You could not close «%s».'
+				, v_regexp);
+		END IF;
+	END CASE;
 END;
 $BODY$;
 
