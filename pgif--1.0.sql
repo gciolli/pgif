@@ -390,31 +390,34 @@ CREATE FUNCTION do_go(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	x text;
-	y text;
-	z interval;
+	v_dt interval;
+	v_is_open bool;
+	v_direction text;
+	v_target_location text;
 BEGIN
 	SELECT description
-	INTO y
+	INTO v_direction
 	FROM directions
 	WHERE upper(a.words[1]) = upper(id);
-	SELECT tgt, path_duration
-	INTO x, z
+	SELECT tgt, path_duration, barrier_is_open
+	INTO v_target_location, v_dt, v_is_open
 	FROM characters_paths_barriers
 	WHERE character_id = current_user
 	AND upper(src_dir) = upper(a.words[1]);
 	IF a.words = '{}' THEN
 		a.response := 'GO requires a direction.';
-	ELSIF FOUND THEN
+	ELSIF FOUND AND v_is_open THEN
 		UPDATE characters
-		SET current_location = x
-		, own_time = own_time + z
+		SET current_location = v_target_location
+		, own_time = own_time + v_dt
 		WHERE id = current_user;
-		a.response := format(E'Going %s.', y);
+		a.response := format(E'Going %s.', v_direction);
 		a.look_after := true;
 	ELSE
 		a.response := format(E'Cannot go %s.'
-			, coalesce(y, format('«%s»', lower(a.words[1]))));
+			, coalesce
+			( v_direction
+			, format('«%s»', lower(a.words[1]))));
 	END IF;
 END;
 $BODY$;
