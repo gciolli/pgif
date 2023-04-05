@@ -371,17 +371,17 @@ RETURNS text
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	w text[];
+	x text[];
 BEGIN
 	SELECT array_agg(format('%s %s', o.article, o.description))
-	INTO w
+	INTO x
 	FROM objects o
 	WHERE o.current_location = current_user;
 	--
 	RETURN format
 	( E'%s\nYou are carrying %s.'
 	, pgif_time()
-	, format_list(w, 'no objects')
+	, format_list(x, 'no objects')
 	);
 END;
 $BODY$;
@@ -569,7 +569,7 @@ BEGIN
 	SET own_time = own_time + dt
 	WHERE id = current_user;
 	a.response := CASE
-		WHEN x > '0 minutes'
+		WHEN dt > '0 minutes'
 		THEN 'You wait.'
 		ELSE '' END;
 	a.look_after := true;
