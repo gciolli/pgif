@@ -560,13 +560,18 @@ CREATE FUNCTION do_wait(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	x interval;
+	dt interval;
 BEGIN
-	x := COALESCE(NULLIF(array_to_string(a.words, ' '), ''), '5 minutes');
+	dt := COALESCE (
+		NULLIF (array_to_string(a.words, ' '), '')
+		, '5 minutes');
 	UPDATE characters
-	SET own_time = own_time + x
+	SET own_time = own_time + dt
 	WHERE id = current_user;
-	a.response := CASE WHEN x > '0 minutes' THEN 'You wait.' ELSE '' END;
+	a.response := CASE
+		WHEN x > '0 minutes'
+		THEN 'You wait.'
+		ELSE '' END;
 	a.look_after := true;
 END;
 $BODY$;
