@@ -135,15 +135,14 @@ CREATE TABLE characters
 ) INHERITS (containers);
 
 --
--- Paths connect locations across directions. They are one-way: a
--- two-way path is represented by two separate records, where the
--- identifier of the second record is equal to the identifier of the
--- first record plus an apostrophe added as a suffix.
+-- Paths connect locations across directions.
 --
--- A path can optionally have a barrier, which can be opened and
--- closed. We still need to decide how to represent two-way doors,
--- perhaps join them using a condition that uses the identifier with
--- the addition of a suffix.
+-- A path can optionally have a barrier. Barriers can be opened and
+-- closed, and have an optional auto_close attribute, to reflect the
+-- way most doors work nowadays. For now we do not represent auto_open
+-- doors as they would add little in their generic form. The only way
+-- an auto open door can make sense is to depend on some specific
+-- condition, such as the presence of a given object or character.
 --
 
 CREATE TABLE paths
@@ -151,30 +150,59 @@ CREATE TABLE paths
 , src     text NOT NULL REFERENCES locations(id)
 , src_dir text NOT NULL REFERENCES directions(id)
 , tgt     text NOT NULL REFERENCES locations(id)
-, tgt_dir text NOT NULL REFERENCES directions(id)
+, tgt_dir text          REFERENCES directions(id)
 , path_name text
-, path_duration interval
+, path_duration interval DEFAULT '5 minutes'
 , UNIQUE (src, src_dir, tgt, tgt_dir)
 );
+
+COMMENT ON COLUMN paths.tgt_dir IS
+'If tgt_dir is set, then the path is considered two-way, meaning that
+it results in two one-way paths.';
 
 CREATE TABLE barriers
 ( id text PRIMARY KEY REFERENCES paths(id)
 , barrier_name text NOT NULL
+, is_open boolean DEFAULT false
 , auto_close boolean DEFAULT false
-, opening_time interval
+, opening_time interval DEFAULT '5 minutes'
 );
 
 CREATE VIEW characters_paths_barriers AS
+WITH one_way_paths AS (
+  SELECT id
+  , id AS path_id
+  , path_name
+  , path_duration
+  , src
+  , src_dir
+  , tgt
+  FROM paths
+UNION ALL
+  SELECT id
+  , id || '''' AS path_id
+  , path_name
+  , path_duration
+  , tgt AS src
+  , tgt_dir AS src_dir
+  , src AS tgt
+  FROM paths
+  WHERE tgt_dir IS NOT NULL
+)
 SELECT c.id AS character_id
+, p.path_id
 , p.path_name
+, p.path_duration
 , b.barrier_name
+, b.is_open AS barrier_is_open
+, b.auto_close AS barrier_auto_close
+, b.opening_time AS barrier_opening_time
 , d.format AS direction_format
 , d.description AS direction_description
 , p.src_dir
 , p.tgt
-, p.path_duration
 FROM characters c
-JOIN paths p ON p.src = c.current_location
+JOIN one_way_paths p ON p.src = c.current_location
 JOIN directions d ON d.id = p.src_dir
 LEFT JOIN barriers b ON b.id = p.id;
 
