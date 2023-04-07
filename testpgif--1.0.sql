@@ -1,7 +1,7 @@
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION testpgif" to load this file. \quit
 
-TRUNCATE objects, paths, containers CASCADE;
+TRUNCATE instances, paths CASCADE;
 
 --
 -- Initial state
@@ -17,11 +17,13 @@ BEGIN
 	( id
 	, name
 	, current_location
+	, is_opaque
 	, own_time
 	) SELECT
 	  current_user
 	, current_user
 	, 'il'
+	, true
 	, timestamp '1996-07-09 06:22:35 UTC'
 	;
 END;
@@ -31,11 +33,11 @@ $BODY$;
 -- Locations
 --
 
-INSERT INTO locations (id, name) VALUES
-('il'	,'the initial location'),
-('a'	,'the Above'),
-('b'	,'the Below'),
-('s'	,'the Side')
+INSERT INTO locations (id, article, name) VALUES
+('il'	,'the'	,'initial location'),
+('a'	,'the'	,'Above'),
+('b'	,'the'	,'Below'),
+('s'	,'the'	,'Side')
 ;
 
 --
@@ -64,8 +66,8 @@ VALUES	('s1'	,'il'	,'ne'	,'b'	,'2 minutes'	,'a downward slide')
 -- Objects
 --
 
-INSERT INTO objects(id, current_location, name, article, description)
-VALUES	('w'	,'b'	,'bottle'	,'a'	,'bottle of water')
-,	('k'	,'il'	,'keys'		,'the'	,'house keys')
-,	('c'	,'il'	,'coat'		,'your'	,'winter coat')
+INSERT INTO objects(id, current_location, article, name)
+VALUES	('bottle'	,'b'	,'a'	,'bottle of water')
+,	('keys'		,'il'	,'the'	,'house keys')
+,	('coat'		,'il'	,'your'	,'winter coat')
 ;

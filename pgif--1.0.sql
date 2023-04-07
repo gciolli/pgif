@@ -90,13 +90,13 @@ FROM a;
 
 --
 -- Objects have a location, an article and a name. They can optionally
--- have a description, and be mobile.
+-- be mobile.
 --
 -- A container is an object that has the extra ability to host other
--- objects. It can optionally be opaque, meaning that it does not
--- reveal its contents until it is examined. Also, you need to examine
--- an object to determine whether it is a container, unless it is not
--- opaque, in which case you can see its contents.
+-- objects.  The container can optionally be opaque, meaning that it
+-- does not reveal its contents until it is examined. Also, you need
+-- to examine an object to determine whether it is a container, unless
+-- it is not opaque, in which case you can see its contents.
 --
 -- A character is a container which is "animated", i.e. with the extra
 -- ability to move spontaneously. Therefore it has its own time. While
@@ -104,35 +104,116 @@ FROM a;
 -- to another, that fact alone does not make it animated.
 --
 -- A location is a container with the extra ability to host a
--- character.
+-- character; therefore it must have a description which is displayed
+-- to visiting characters.
 --
 -- Note that there can be containers that are neither characters nor
 -- locations, and objects that are not containers.
 --
 
-CREATE TABLE objects
+CREATE TABLE instances
 ( id text PRIMARY KEY
 , name text
 , article text
-, current_location text
+, current_location text REFERENCES instances(id)
 , description text
 , is_mobile bool DEFAULT true
+, is_opaque bool
+, own_time timestamp(0)
 );
 
-CREATE TABLE containers
-( is_opaque bool DEFAULT false
-) INHERITS (objects);
+COMMENT ON COLUMN instances.is_opaque IS
+'An object is a container if is_opaque is not null';
 
-CREATE TABLE locations
-( UNIQUE (id)
-) INHERITS (containers);
+COMMENT ON COLUMN instances.description IS
+'A container is a location if description is not null';
 
-ALTER TABLE objects
-ADD FOREIGN KEY (current_location) REFERENCES locations(id);
+COMMENT ON COLUMN instances.own_time IS
+'A container is a character if own_time is not null';
 
-CREATE TABLE characters
-( own_time timestamp(0)
-) INHERITS (containers);
+CREATE VIEW objects AS
+SELECT id
+, name
+, article
+, current_location
+, is_mobile
+FROM instances;
+
+CREATE VIEW containers AS
+SELECT id
+, name
+, article
+, current_location
+, is_mobile
+, is_opaque
+FROM instances
+WHERE is_opaque IS NOT NULL;
+
+CREATE VIEW locations AS
+SELECT id
+, name
+, article
+, description
+, current_location
+, is_mobile
+, is_opaque
+FROM instances
+WHERE is_opaque IS NOT NULL
+  AND description IS NOT NULL;
+
+--
+-- The purpose of the following trigger is to ensure that is_opaque
+-- and description are automatically populated.
+--
+
+CREATE FUNCTION tf_locations()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $BODY$
+BEGIN
+	CASE TG_OP
+	WHEN 'INSERT' THEN
+		CASE TG_TABLE_NAME
+		WHEN 'locations' THEN
+			INSERT INTO instances
+			( id
+			, name
+			, article
+			, description
+			, current_location
+			, is_mobile
+			, is_opaque
+			) VALUES
+			( NEW.id
+			, NEW.name
+			, NEW.article
+			, COALESCE(NEW.description, NEW.name)
+			, NEW.current_location
+			, NEW.is_mobile
+			, COALESCE(NEW.is_opaque, true)
+			);
+		END CASE;
+	END CASE;
+	RETURN NEW;
+END;
+$BODY$;
+
+CREATE TRIGGER tg_locations
+  INSTEAD OF INSERT ON locations
+  FOR EACH ROW
+  EXECUTE PROCEDURE tf_locations();
+
+CREATE VIEW characters AS
+SELECT id
+, name
+, article
+, own_time
+, current_location
+, is_mobile
+, is_opaque
+FROM instances
+WHERE is_opaque IS NOT NULL
+  AND own_time IS NOT NULL;
 
 --
 -- Paths connect locations across directions.
@@ -147,9 +228,9 @@ CREATE TABLE characters
 
 CREATE TABLE paths
 ( id text PRIMARY KEY
-, src     text NOT NULL REFERENCES locations(id)
+, src     text NOT NULL REFERENCES instances(id)
 , src_dir text NOT NULL REFERENCES directions(id)
-, tgt     text NOT NULL REFERENCES locations(id)
+, tgt     text NOT NULL REFERENCES instances(id)
 , tgt_dir text          REFERENCES directions(id)
 , path_name text
 , path_duration interval DEFAULT '5 minutes'
@@ -163,7 +244,7 @@ it results in two one-way paths.';
 CREATE TABLE barriers
 ( id text PRIMARY KEY REFERENCES paths(id)
 , barrier_name text NOT NULL
-, is_open boolean DEFAULT false
+, is_closed boolean DEFAULT false
 , auto_close boolean DEFAULT false
 , opening_time interval DEFAULT '5 minutes'
 );
@@ -195,17 +276,20 @@ SELECT c.id AS character_id
 , p.path_duration
 , p.id AS barrier_id
 , b.barrier_name
-, b.is_open AS barrier_is_open
+, b.is_closed AS barrier_is_closed
 , b.auto_close AS barrier_auto_close
 , b.opening_time AS barrier_opening_time
 , d.format AS direction_format
 , d.description AS direction_description
 , p.src_dir
 , p.tgt
-FROM characters c
-JOIN one_way_paths p ON p.src = c.current_location
-JOIN directions d ON d.id = p.src_dir
-LEFT JOIN barriers b ON b.id = p.id;
+FROM objects c
+JOIN one_way_paths p
+  ON p.src = c.current_location
+JOIN directions d
+  ON d.id = p.src_dir
+LEFT JOIN barriers b
+       ON b.id = p.id;
 
 CREATE VIEW characters_locations AS
 SELECT c.id AS character_id
@@ -218,7 +302,7 @@ CREATE VIEW characters_objects AS
 SELECT c.id AS character_id
 , o.id AS object_id
 , o.article AS object_article
-, o.description AS object_description
+, o.name AS object_name
 FROM characters c
 JOIN objects o ON o.current_location = c.current_location
 WHERE o.id != c.id;
@@ -328,7 +412,7 @@ BEGIN
 	  , CASE WHEN barrier_name IS NULL THEN '.' ELSE
 	    format
 	    ( E'; %s is %s.', barrier_name
-	    , CASE WHEN barrier_is_open THEN 'open' ELSE 'closed'
+	    , CASE WHEN barrier_is_closed THEN 'closed' ELSE 'open'
 	      END )
 	    END
 	  ), E'\n')
@@ -344,7 +428,7 @@ BEGIN
 	AND path_name IS NULL;
 	-- (4) objects in sight
 	SELECT array_agg(format('%s %s'
-		, object_article, object_description))
+		, object_article, object_name))
 	INTO w
 	FROM characters_objects
 	WHERE character_id = current_user;
@@ -373,7 +457,7 @@ AS $BODY$
 DECLARE
 	x text[];
 BEGIN
-	SELECT array_agg(format('%s %s', o.article, o.description))
+	SELECT array_agg(format('%s %s', o.article, o.name))
 	INTO x
 	FROM objects o
 	WHERE o.current_location = current_user;
@@ -391,7 +475,7 @@ LANGUAGE plpgsql
 AS $BODY$
 DECLARE
 	v_dt interval;
-	v_is_open bool;
+	v_is_closed bool;
 	v_direction text;
 	v_target_location text;
 BEGIN
@@ -399,25 +483,25 @@ BEGIN
 	INTO v_direction
 	FROM directions
 	WHERE upper(a.words[1]) = upper(id);
-	SELECT tgt, path_duration, barrier_is_open
-	INTO v_target_location, v_dt, v_is_open
+	SELECT tgt, path_duration, barrier_is_closed
+	INTO v_target_location, v_dt, v_is_closed
 	FROM characters_paths_barriers
 	WHERE character_id = current_user
 	AND upper(src_dir) = upper(a.words[1]);
 	IF a.words = '{}' THEN
 		a.response := 'GO requires a direction.';
-	ELSIF FOUND AND v_is_open THEN
+	ELSIF FOUND AND v_is_closed THEN
+		a.response := format(E'Cannot go %s.'
+			, coalesce
+			( v_direction
+			, format('«%s»', lower(a.words[1]))));
+	ELSE
 		UPDATE characters
 		SET current_location = v_target_location
 		, own_time = own_time + v_dt
 		WHERE id = current_user;
 		a.response := format(E'Going %s.', v_direction);
 		a.look_after := true;
-	ELSE
-		a.response := format(E'Cannot go %s.'
-			, coalesce
-			( v_direction
-			, format('«%s»', lower(a.words[1]))));
 	END IF;
 END;
 $BODY$;
@@ -426,22 +510,32 @@ CREATE FUNCTION do_take(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	x text;
+	v_matches text;
 BEGIN
+	SELECT match
+	( word := a.words[1]
+	, candidates := array_agg(format
+	    ( '%s %s'
+	    , object_article
+	    , object_name
+	    )
+	  )
+	) INTO v_matches
+	FROM characters_objects
+	WHERE character_id = current_user;
 	UPDATE objects o
 	SET current_location = current_user
 	FROM characters u
 	WHERE o.current_location = u.current_location
-	AND upper(o.name) = upper(a.words[1])
-	RETURNING format('%s %s', o.article, o.description) INTO x;
+	AND format('%s %s', o.article, o.name) = v_matches;
 	IF FOUND THEN
 		UPDATE characters
 		SET own_time = own_time + '2 minutes'
 		WHERE id = current_user;
-		a.response := format(E'You take %s.', x);
+		a.response := format(E'You take %s.', v_matches);
 		a.look_after := true;
 	ELSE
-		a.response := format(E'You cannot see any %s.', lower(a.words[1]));
+		a.response := v_matches;
 	END IF;
 END;
 $BODY$;
@@ -450,22 +544,32 @@ CREATE FUNCTION do_drop(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	x text;
+	v_matches text;
 BEGIN
+	SELECT match
+	( word := a.words[1]
+	, candidates := array_agg(format
+	    ( '%s %s'
+	    , article
+	    , name
+	    )
+	  )
+	) INTO v_matches
+	FROM objects
+	WHERE current_location = current_user;
 	UPDATE objects o
 	SET current_location = u.current_location
 	FROM characters u
 	WHERE o.current_location = current_user
-	AND upper(o.name) = upper(a.words[1])
-	RETURNING format('%s %s', o.article, o.description) INTO x;
+	AND format('%s %s', o.article, o.name) = v_matches;
 	IF FOUND THEN
 		UPDATE characters
 		SET own_time = own_time + '2 minutes'
 		WHERE id = current_user;
-		a.response := format(E'You drop %s.', x);
+		a.response := format(E'You drop %s.', v_matches);
 		a.look_after := true;
 	ELSE
-		a.response := format(E'You do not have any %s.', lower(a.words[1]));
+		a.response := v_matches;
 	END IF;
 END;
 $BODY$;
@@ -475,41 +579,28 @@ LANGUAGE plpgsql
 AS $BODY$
 DECLARE
 	v_dt interval;
-	v_ids text;
-	v_regexp text := array_to_string(a.words, ' ');
-	v_match_count bigint;
-	v_barrier_name text;
+	v_matches text;
 BEGIN
-	SELECT string_agg(barrier_id, ' '), count(*)
-	INTO v_ids, v_match_count
-	FROM characters_paths_barriers v
-	WHERE v.character_id = current_user
-	AND v.barrier_name ~* v_regexp
-	AND NOT v.barrier_is_open;
-	CASE
-	WHEN v_match_count = 0 THEN
-		a.response := format('ERROR: cannot match «%s»', v_regexp);
-	WHEN v_match_count > 1 THEN
-		a.response := format
-		( 'ERROR: ambiguous term «%s» could be any of: %s'
-		, v_regexp, v_ids);
+	SELECT match
+	( word := a.words[1]
+	, candidates := array_agg(barrier_name)
+	) INTO v_matches
+	FROM characters_paths_barriers
+	WHERE character_id = current_user
+	AND barrier_is_closed;
+	UPDATE barriers
+	SET is_closed = false
+	WHERE barrier_name = v_matches
+	RETURNING opening_time
+	INTO v_dt;
+	IF FOUND THEN
+		UPDATE characters
+		SET own_time = own_time + v_dt
+		WHERE id = current_user;
+		a.response := format(E'You open %s.', v_matches);
 	ELSE
-		UPDATE barriers b
-		SET is_open = true
-		WHERE b.id = v_ids
-		RETURNING opening_time, barrier_name
-		INTO STRICT v_dt, v_barrier_name;
-		IF FOUND THEN
-			UPDATE characters
-			SET own_time = own_time + v_dt
-			WHERE id = current_user;
-			a.response := format(E'You open %s.'
-				, v_barrier_name);
-		ELSE
-			a.response := format(E'You could not open «%s».'
-				, v_regexp);
-		END IF;
-	END CASE;
+		a.response := v_matches;
+	END IF;
 END;
 $BODY$;
 
@@ -517,42 +608,23 @@ CREATE FUNCTION do_close(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	v_dt interval;
-	v_ids text;
-	v_regexp text := array_to_string(a.words, ' ');
-	v_match_count bigint;
-	v_barrier_name text;
+	v_matches text;
 BEGIN
-	SELECT string_agg(barrier_id, ' '), count(*)
-	INTO v_ids, v_match_count
-	FROM characters_paths_barriers v
-	WHERE v.character_id = current_user
-	AND v.barrier_name ~* v_regexp
-	AND v.barrier_is_open;
-	CASE
-	WHEN v_match_count = 0 THEN
-		a.response := format('ERROR: cannot match «%s»', v_regexp);
-	WHEN v_match_count > 1 THEN
-		a.response := format
-		( 'ERROR: ambiguous term «%s» could be any of: %s'
-		, v_regexp, v_ids);
+	SELECT match
+	( word := a.words[1]
+	, candidates := array_agg(barrier_name)
+	) INTO v_matches
+	FROM characters_paths_barriers
+	WHERE character_id = current_user
+	AND NOT barrier_is_closed;
+	UPDATE barriers
+	SET is_closed = true
+	WHERE barrier_name = v_matches;
+	IF FOUND THEN
+		a.response := format(E'You close %s.', v_matches);
 	ELSE
-		UPDATE barriers b
-		SET is_open = false
-		WHERE b.id = v_ids
-		RETURNING barrier_name
-		INTO STRICT v_barrier_name;
-		IF FOUND THEN
-			UPDATE characters
-			SET own_time = own_time + '1 minutes'
-			WHERE id = current_user;
-			a.response := format(E'You close %s.'
-				, v_barrier_name);
-		ELSE
-			a.response := format(E'You could not close «%s».'
-				, v_regexp);
-		END IF;
-	END CASE;
+		a.response := v_matches;
+	END IF;
 END;
 $BODY$;
 
@@ -587,6 +659,35 @@ $BODY$;
 --
 -- IF engine
 --
+
+CREATE FUNCTION match
+( word IN text
+, candidates IN text[]
+, regexp IN text DEFAULT '%s'
+, response OUT text
+) LANGUAGE plpgsql
+AS $BODY$
+DECLARE
+	v_matches text[];
+BEGIN
+	SELECT array_agg(x)
+	INTO v_matches
+	FROM unnest(candidates) AS f(x)
+	WHERE x ~* format(regexp, word);
+	CASE
+	WHEN v_matches IS NULL THEN
+		response := format
+		( 'ERROR: cannot match «%s»', word);
+	WHEN array_length(v_matches, 1) > 1 THEN
+		response := format
+		( 'ERROR: ambiguous term «%s» matches: %s'
+		, word, array_to_string(v_matches, ', ')
+		);
+	ELSE
+		response := v_matches[1];
+	END CASE;
+END;
+$BODY$;
 
 CREATE FUNCTION parse(text)
 RETURNS actions
@@ -623,26 +724,22 @@ AS $BODY$
 DECLARE
 	v_id text;
 	v_he boolean;
-	v_regexp text := format('^%s', a.verb);
-	v_match_count bigint;
 	v_duration interval;
 	dispatch_sql text;
 BEGIN
-	SELECT string_agg(id, ' '), count(*)
-	INTO a.matches, v_match_count
-	FROM verbs
-	WHERE id ~* v_regexp;
+	SELECT match
+	( word := a.verb
+	, regexp := '^%s'
+	, candidates := array_agg(id)
+	) INTO a.matches
+	FROM verbs;
 	SELECT id, has_effect, default_duration
 	INTO v_id, v_he, v_duration
 	FROM verbs
-	WHERE id ~* v_regexp;
+	WHERE id = a.matches;
 	CASE
-	WHEN v_match_count = 0 THEN
-		a.response := format('ERROR: unknown verb «%s»', a.verb);
-	WHEN v_match_count > 1 THEN
-		a.response := format
-		( 'ERROR: ambiguous verb «%s» could be: %s'
-		, a.verb, a.matches);
+	WHEN NOT FOUND THEN
+		a.response := a.matches;
 	WHEN v_he IS NULL THEN
 		SELECT * INTO STRICT a FROM do_missing(a);
 	WHEN v_he THEN
