@@ -171,30 +171,30 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $BODY$
 BEGIN
-	CASE TG_OP
-	WHEN 'INSERT' THEN
-		CASE TG_TABLE_NAME
-		WHEN 'locations' THEN
-			INSERT INTO instances
-			( id
-			, name
-			, article
-			, description
-			, current_location
-			, is_mobile
-			, is_opaque
-			) VALUES
-			( NEW.id
-			, NEW.name
-			, NEW.article
-			, COALESCE(NEW.description, NEW.name)
-			, NEW.current_location
-			, NEW.is_mobile
-			, COALESCE(NEW.is_opaque, true)
-			);
-		END CASE;
-	END CASE;
-	RETURN NEW;
+  CASE TG_OP
+  WHEN 'INSERT' THEN
+    CASE TG_TABLE_NAME
+    WHEN 'locations' THEN
+      INSERT INTO instances
+      ( id
+      , name
+      , article
+      , description
+      , current_location
+      , is_mobile
+      , is_opaque
+      ) VALUES
+      ( NEW.id
+      , NEW.name
+      , NEW.article
+      , COALESCE(NEW.description, NEW.name)
+      , NEW.current_location
+      , NEW.is_mobile
+      , COALESCE(NEW.is_opaque, true)
+      );
+    END CASE;
+  END CASE;
+  RETURN NEW;
 END;
 $BODY$;
 
@@ -229,8 +229,8 @@ WHERE is_opaque IS NOT NULL
 CREATE TABLE paths
 ( id text PRIMARY KEY
 , src     text NOT NULL REFERENCES instances(id)
-, src_dir text NOT NULL REFERENCES directions(id)
 , tgt     text NOT NULL REFERENCES instances(id)
+, src_dir text NOT NULL REFERENCES directions(id)
 , tgt_dir text          REFERENCES directions(id)
 , path_name text
 , path_duration interval DEFAULT '5 minutes'
@@ -289,14 +289,15 @@ JOIN one_way_paths p
 JOIN directions d
   ON d.id = p.src_dir
 LEFT JOIN barriers b
-       ON b.id = p.id;
+  ON b.id = p.id;
 
 CREATE VIEW characters_locations AS
 SELECT c.id AS character_id
 , l.description AS location_description
 , l.name AS location_name
 FROM characters c
-JOIN locations l ON l.id = c.current_location;
+JOIN locations l
+  ON l.id = c.current_location;
 
 CREATE VIEW characters_objects AS
 SELECT c.id AS character_id
@@ -304,7 +305,8 @@ SELECT c.id AS character_id
 , o.article AS object_article
 , o.name AS object_name
 FROM characters c
-JOIN objects o ON o.current_location = c.current_location
+JOIN objects o
+  ON o.current_location = c.current_location
 WHERE o.id != c.id;
 
 --
@@ -339,8 +341,7 @@ CREATE FUNCTION format_list(text[], text)
 RETURNS text
 LANGUAGE SQL
 AS $BODY$
-SELECT
-CASE
+SELECT CASE
 WHEN $1 IS NULL THEN $2
 WHEN array_length($1,1) = 1 THEN $1[1]
 ELSE format
@@ -360,22 +361,25 @@ RETURNS text
 LANGUAGE SQL
 AS $BODY$
 WITH a (id, n) AS (
-SELECT CASE
-WHEN has_effect IS NULL THEN format('%s (*)', id)
-ELSE id
-END, row_number() OVER (ORDER BY id)
-FROM verbs
-) SELECT format($$Available verbs:
+  SELECT CASE
+  WHEN has_effect IS NULL THEN format('%s (*)', id)
+  ELSE id
+  END, row_number() OVER (ORDER BY id)
+  FROM verbs
+)
+SELECT format($$Available verbs:
 
 %s
 
 (*) = not implemented yet$$
 , string_agg
-( format('%-20s   %-20s   %-20s', a.id, a1.id, a2.id), E'\n'
+( format('%-20s	  %-20s	  %-20s', a.id, a1.id, a2.id), E'\n'
   ORDER BY a.n ))
 FROM a
-JOIN a AS a1 ON a.n + 5 = a1.n
-LEFT JOIN a AS a2 ON a.n + 10 = a2.n
+JOIN a AS a1
+  ON a.n + 5 = a1.n
+LEFT JOIN a AS a2
+  ON a.n + 10 = a2.n
 WHERE a.n <= 5
 $BODY$;
 
@@ -391,62 +395,62 @@ RETURNS text
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	x text;
-	y text;
-	z text;
-	w text[];
+  x text;
+  y text;
+  z text;
+  w text[];
 BEGIN
-	-- (1) description
-	SELECT format('You are in %s.'
-		, coalesce(location_description, location_name))
-	INTO STRICT x
-	FROM characters_locations
-	WHERE character_id = current_user;
-	-- (2) named exits
-	SELECT string_agg
-	( format
-	  ( 'There is %s%s %s%s'
-	  , path_name
-	  , COALESCE(' with ' || barrier_name, '')
-	  , format(direction_format, direction_description)
-	  , CASE WHEN barrier_name IS NULL THEN '.' ELSE
-	    format
-	    ( E'; %s is %s.', barrier_name
-	    , CASE WHEN barrier_is_closed THEN 'closed' ELSE 'open'
-	      END )
-	    END
-	  ), E'\n')
-	INTO y
-	FROM characters_paths_barriers
-	WHERE character_id = current_user
-	AND path_name IS NOT NULL;
-	-- (3) anonymous exits
-	SELECT string_agg(direction_description, ', ')
-	INTO z
-	FROM characters_paths_barriers
-	WHERE character_id = current_user
-	AND path_name IS NULL;
-	-- (4) objects in sight
-	SELECT array_agg(format('%s %s'
-		, object_article, object_name))
-	INTO w
-	FROM characters_objects
-	WHERE character_id = current_user;
-	--
-	RETURN format
-	( E'%s\n%s\n%s\n%s\n%s'
-	, pgif_time()
-	, x
-	, y
-	, CASE WHEN z IS NULL
-	  THEN 'No other exits available.'
-	  ELSE format('Other exits: %s', z)
-	  END
-	, CASE WHEN w IS NULL
-	  THEN ''
-	  ELSE format('You can see %s.', format_list(w, 'no objects'))
-	  END
-	);
+  -- (1) description
+  SELECT format('You are in %s.'
+    , coalesce(location_description, location_name))
+  INTO STRICT x
+  FROM characters_locations
+  WHERE character_id = current_user;
+  -- (2) named exits
+  SELECT string_agg
+  ( format
+    ( 'There is %s%s %s%s'
+    , path_name
+    , COALESCE(' with ' || barrier_name, '')
+    , format(direction_format, direction_description)
+    , CASE WHEN barrier_name IS NULL THEN '.' ELSE
+      format
+      ( E'; %s is %s.', barrier_name
+      , CASE WHEN barrier_is_closed THEN 'closed' ELSE 'open'
+        END )
+      END
+    ), E'\n')
+  INTO y
+  FROM characters_paths_barriers
+  WHERE character_id = current_user
+  AND path_name IS NOT NULL;
+  -- (3) anonymous exits
+  SELECT string_agg(direction_description, ', ')
+  INTO z
+  FROM characters_paths_barriers
+  WHERE character_id = current_user
+  AND path_name IS NULL;
+  -- (4) objects in sight
+  SELECT array_agg(format('%s %s'
+    , object_article, object_name))
+  INTO w
+  FROM characters_objects
+  WHERE character_id = current_user;
+  --
+  RETURN format
+  ( E'%s\n%s\n%s\n%s\n%s'
+  , pgif_time()
+  , x
+  , y
+  , CASE WHEN z IS NULL
+    THEN 'No other exits available.'
+    ELSE format('Other exits: %s', z)
+    END
+  , CASE WHEN w IS NULL
+    THEN ''
+    ELSE format('You can see %s.', format_list(w, 'no objects'))
+    END
+  );
 END;
 $BODY$;
 
@@ -455,18 +459,18 @@ RETURNS text
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	x text[];
+  x text[];
 BEGIN
-	SELECT array_agg(format('%s %s', o.article, o.name))
-	INTO x
-	FROM objects o
-	WHERE o.current_location = current_user;
-	--
-	RETURN format
-	( E'%s\nYou are carrying %s.'
-	, pgif_time()
-	, format_list(x, 'no objects')
-	);
+  SELECT array_agg(format('%s %s', o.article, o.name))
+  INTO x
+  FROM objects o
+  WHERE o.current_location = current_user;
+  --
+  RETURN format
+  ( E'%s\nYou are carrying %s.'
+  , pgif_time()
+  , format_list(x, 'no objects')
+  );
 END;
 $BODY$;
 
@@ -474,35 +478,35 @@ CREATE FUNCTION do_go(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	v_dt interval;
-	v_is_closed bool;
-	v_direction text;
-	v_target_location text;
+  v_dt interval;
+  v_is_closed bool;
+  v_direction text;
+  v_target_location text;
 BEGIN
-	SELECT description
-	INTO v_direction
-	FROM directions
-	WHERE upper(a.words[1]) = upper(id);
-	SELECT tgt, path_duration, barrier_is_closed
-	INTO v_target_location, v_dt, v_is_closed
-	FROM characters_paths_barriers
-	WHERE character_id = current_user
-	AND upper(src_dir) = upper(a.words[1]);
-	IF a.words = '{}' THEN
-		a.response := 'GO requires a direction.';
-	ELSIF FOUND AND v_is_closed THEN
-		a.response := format(E'Cannot go %s.'
-			, coalesce
-			( v_direction
-			, format('«%s»', lower(a.words[1]))));
-	ELSE
-		UPDATE characters
-		SET current_location = v_target_location
-		, own_time = own_time + v_dt
-		WHERE id = current_user;
-		a.response := format(E'Going %s.', v_direction);
-		a.look_after := true;
-	END IF;
+  SELECT description
+  INTO v_direction
+  FROM directions
+  WHERE upper(a.words[1]) = upper(id);
+  SELECT tgt, path_duration, barrier_is_closed
+  INTO v_target_location, v_dt, v_is_closed
+  FROM characters_paths_barriers
+  WHERE character_id = current_user
+  AND upper(src_dir) = upper(a.words[1]);
+  IF a.words = '{}' THEN
+    a.response := 'GO requires a direction.';
+  ELSIF FOUND AND v_is_closed THEN
+    a.response := format(E'Cannot go %s.'
+      , coalesce
+      ( v_direction
+      , format('«%s»', lower(a.words[1]))));
+  ELSE
+    UPDATE characters
+    SET current_location = v_target_location
+    , own_time = own_time + v_dt
+    WHERE id = current_user;
+    a.response := format(E'Going %s.', v_direction);
+    a.look_after := true;
+  END IF;
 END;
 $BODY$;
 
@@ -510,33 +514,33 @@ CREATE FUNCTION do_take(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	v_matches text;
+  v_matches text;
 BEGIN
-	SELECT match
-	( word := a.words[1]
-	, candidates := array_agg(format
-	    ( '%s %s'
-	    , object_article
-	    , object_name
-	    )
-	  )
-	) INTO v_matches
-	FROM characters_objects
-	WHERE character_id = current_user;
-	UPDATE objects o
-	SET current_location = current_user
-	FROM characters u
-	WHERE o.current_location = u.current_location
-	AND format('%s %s', o.article, o.name) = v_matches;
-	IF FOUND THEN
-		UPDATE characters
-		SET own_time = own_time + '2 minutes'
-		WHERE id = current_user;
-		a.response := format(E'You take %s.', v_matches);
-		a.look_after := true;
-	ELSE
-		a.response := v_matches;
-	END IF;
+  SELECT match
+  ( word := a.words[1]
+  , candidates := array_agg(format
+      ( '%s %s'
+      , object_article
+      , object_name
+      )
+    )
+  ) INTO v_matches
+  FROM characters_objects
+  WHERE character_id = current_user;
+  UPDATE objects o
+  SET current_location = current_user
+  FROM characters u
+  WHERE o.current_location = u.current_location
+  AND format('%s %s', o.article, o.name) = v_matches;
+  IF FOUND THEN
+    UPDATE characters
+    SET own_time = own_time + '2 minutes'
+    WHERE id = current_user;
+    a.response := format(E'You take %s.', v_matches);
+    a.look_after := true;
+  ELSE
+    a.response := v_matches;
+  END IF;
 END;
 $BODY$;
 
@@ -544,33 +548,33 @@ CREATE FUNCTION do_drop(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	v_matches text;
+  v_matches text;
 BEGIN
-	SELECT match
-	( word := a.words[1]
-	, candidates := array_agg(format
-	    ( '%s %s'
-	    , article
-	    , name
-	    )
-	  )
-	) INTO v_matches
-	FROM objects
-	WHERE current_location = current_user;
-	UPDATE objects o
-	SET current_location = u.current_location
-	FROM characters u
-	WHERE o.current_location = current_user
-	AND format('%s %s', o.article, o.name) = v_matches;
-	IF FOUND THEN
-		UPDATE characters
-		SET own_time = own_time + '2 minutes'
-		WHERE id = current_user;
-		a.response := format(E'You drop %s.', v_matches);
-		a.look_after := true;
-	ELSE
-		a.response := v_matches;
-	END IF;
+  SELECT match
+  ( word := a.words[1]
+  , candidates := array_agg(format
+      ( '%s %s'
+      , article
+      , name
+      )
+    )
+  ) INTO v_matches
+  FROM objects
+  WHERE current_location = current_user;
+  UPDATE objects o
+  SET current_location = u.current_location
+  FROM characters u
+  WHERE o.current_location = current_user
+  AND format('%s %s', o.article, o.name) = v_matches;
+  IF FOUND THEN
+    UPDATE characters
+    SET own_time = own_time + '2 minutes'
+    WHERE id = current_user;
+    a.response := format(E'You drop %s.', v_matches);
+    a.look_after := true;
+  ELSE
+    a.response := v_matches;
+  END IF;
 END;
 $BODY$;
 
@@ -578,29 +582,29 @@ CREATE FUNCTION do_open(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	v_dt interval;
-	v_matches text;
+  v_dt interval;
+  v_matches text;
 BEGIN
-	SELECT match
-	( word := a.words[1]
-	, candidates := array_agg(barrier_name)
-	) INTO v_matches
-	FROM characters_paths_barriers
-	WHERE character_id = current_user
-	AND barrier_is_closed;
-	UPDATE barriers
-	SET is_closed = false
-	WHERE barrier_name = v_matches
-	RETURNING opening_time
-	INTO v_dt;
-	IF FOUND THEN
-		UPDATE characters
-		SET own_time = own_time + v_dt
-		WHERE id = current_user;
-		a.response := format(E'You open %s.', v_matches);
-	ELSE
-		a.response := v_matches;
-	END IF;
+  SELECT match
+  ( word := a.words[1]
+  , candidates := array_agg(barrier_name)
+  ) INTO v_matches
+  FROM characters_paths_barriers
+  WHERE character_id = current_user
+  AND barrier_is_closed;
+  UPDATE barriers
+  SET is_closed = false
+  WHERE barrier_name = v_matches
+  RETURNING opening_time
+  INTO v_dt;
+  IF FOUND THEN
+    UPDATE characters
+    SET own_time = own_time + v_dt
+    WHERE id = current_user;
+    a.response := format(E'You open %s.', v_matches);
+  ELSE
+    a.response := v_matches;
+  END IF;
 END;
 $BODY$;
 
@@ -608,23 +612,23 @@ CREATE FUNCTION do_close(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	v_matches text;
+  v_matches text;
 BEGIN
-	SELECT match
-	( word := a.words[1]
-	, candidates := array_agg(barrier_name)
-	) INTO v_matches
-	FROM characters_paths_barriers
-	WHERE character_id = current_user
-	AND NOT barrier_is_closed;
-	UPDATE barriers
-	SET is_closed = true
-	WHERE barrier_name = v_matches;
-	IF FOUND THEN
-		a.response := format(E'You close %s.', v_matches);
-	ELSE
-		a.response := v_matches;
-	END IF;
+  SELECT match
+  ( word := a.words[1]
+  , candidates := array_agg(barrier_name)
+  ) INTO v_matches
+  FROM characters_paths_barriers
+  WHERE character_id = current_user
+  AND NOT barrier_is_closed;
+  UPDATE barriers
+  SET is_closed = true
+  WHERE barrier_name = v_matches;
+  IF FOUND THEN
+    a.response := format(E'You close %s.', v_matches);
+  ELSE
+    a.response := v_matches;
+  END IF;
 END;
 $BODY$;
 
@@ -632,19 +636,16 @@ CREATE FUNCTION do_wait(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	dt interval;
+  dt interval;
 BEGIN
-	dt := COALESCE (
-		NULLIF (array_to_string(a.words, ' '), '')
-		, '5 minutes');
-	UPDATE characters
-	SET own_time = own_time + dt
-	WHERE id = current_user;
-	a.response := CASE
-		WHEN dt > '0 minutes'
-		THEN 'You wait.'
-		ELSE '' END;
-	a.look_after := true;
+  dt := COALESCE
+  ( NULLIF (array_to_string(a.words, ' '), '')
+    , '5 minutes');
+  UPDATE characters
+  SET own_time = own_time + dt
+  WHERE id = current_user;
+  a.response := CASE WHEN dt > '0 minutes' THEN 'You wait.' ELSE '' END;
+  a.look_after := true;
 END;
 $BODY$;
 
@@ -652,7 +653,7 @@ CREATE FUNCTION do_missing(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 BEGIN
-	a.response := format('Apologies: %s not yet implemented.', a.matches);
+  a.response := format('Apologies: %s not yet implemented.', a.matches);
 END;
 $BODY$;
 
@@ -668,24 +669,24 @@ CREATE FUNCTION match
 ) LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	v_matches text[];
+  v_matches text[];
 BEGIN
-	SELECT array_agg(x)
-	INTO v_matches
-	FROM unnest(candidates) AS f(x)
-	WHERE x ~* format(regexp, word);
-	CASE
-	WHEN v_matches IS NULL THEN
-		response := format
-		( 'ERROR: cannot match «%s»', word);
-	WHEN array_length(v_matches, 1) > 1 THEN
-		response := format
-		( 'ERROR: ambiguous term «%s» matches: %s'
-		, word, array_to_string(v_matches, ', ')
-		);
-	ELSE
-		response := v_matches[1];
-	END CASE;
+  SELECT array_agg(x)
+  INTO v_matches
+  FROM unnest(candidates) AS f(x)
+  WHERE x ~* format(regexp, word);
+  CASE
+  WHEN v_matches IS NULL THEN
+    response := format
+    ( 'ERROR: cannot match «%s»', word);
+  WHEN array_length(v_matches, 1) > 1 THEN
+    response := format
+    ( 'ERROR: ambiguous term «%s» matches: %s'
+    , word, array_to_string(v_matches, ', ')
+    );
+  ELSE
+    response := v_matches[1];
+  END CASE;
 END;
 $BODY$;
 
@@ -694,27 +695,27 @@ RETURNS actions
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	a actions;
-	words text[];
+  a actions;
+  words text[];
 BEGIN
-	-- (1) sanitise input
-	a.sentence := regexp_replace($1, '"', ' " ', 'g');
-	a.sentence := regexp_replace(a.sentence, '	', ' ', 'g');
-	a.sentence := regexp_replace(a.sentence, '  +', ' ', 'g');
+  -- (1) sanitise input
+  a.sentence := regexp_replace($1, '"', ' " ', 'g');
+  a.sentence := regexp_replace(a.sentence, '	', ' ', 'g');
+  a.sentence := regexp_replace(a.sentence, '  +', ' ', 'g');
 
-	-- (2) split in words
-	words := string_to_array(upper(trim(a.sentence)), ' ');
-	IF words = '{}' THEN
-		a.verb := 'HELP';
-	ELSIF words[1:1] <@ '{N,S,E,W,NE,SE,SW,NW,U,D}' THEN
-		a.verb := 'GO';
-		a.words := words[1:1];
-	ELSE
-		a.verb := words[1];
-		a.words := words[2:];
-	END IF;
+  -- (2) split in words
+  words := string_to_array(upper(trim(a.sentence)), ' ');
+  IF words = '{}' THEN
+    a.verb := 'HELP';
+  ELSIF words[1:1] <@ '{N,S,E,W,NE,SE,SW,NW,U,D}' THEN
+    a.verb := 'GO';
+    a.words := words[1:1];
+  ELSE
+    a.verb := words[1];
+    a.words := words[2:];
+  END IF;
 
-	RETURN a;
+  RETURN a;
 END;
 $BODY$;
 
@@ -722,42 +723,42 @@ CREATE PROCEDURE dispatch(a INOUT actions)
 LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	v_id text;
-	v_he boolean;
-	v_duration interval;
-	dispatch_sql text;
+  v_id text;
+  v_he boolean;
+  v_duration interval;
+  dispatch_sql text;
 BEGIN
-	SELECT match
-	( word := a.verb
-	, regexp := '^%s'
-	, candidates := array_agg(id)
-	) INTO a.matches
-	FROM verbs;
-	SELECT id, has_effect, default_duration
-	INTO v_id, v_he, v_duration
-	FROM verbs
-	WHERE id = a.matches;
-	CASE
-	WHEN NOT FOUND THEN
-		a.response := a.matches;
-	WHEN v_he IS NULL THEN
-		SELECT * INTO STRICT a FROM do_missing(a);
-	WHEN v_he THEN
-		a.look_after := false;
-		dispatch_sql := format('SELECT * FROM do_%s($1)', lower(v_id));
-		EXECUTE dispatch_sql INTO STRICT a USING a;
-		IF a.look_after THEN
-			a.response := format(E'%s\n\n%s', a.response, do_look());
-		END IF;
-	WHEN NOT v_he THEN
-		-- Passage of time
-		UPDATE characters
-		SET own_time = own_time + coalesce(v_duration, '0 minutes')
-		WHERE id = current_user;
-		-- Display
-		dispatch_sql := format('SELECT * FROM do_%s()', lower(v_id));
-		EXECUTE dispatch_sql INTO STRICT a.response;
-	END CASE;
+  SELECT match
+  ( word := a.verb
+  , regexp := '^%s'
+  , candidates := array_agg(id)
+  ) INTO a.matches
+  FROM verbs;
+  SELECT id, has_effect, default_duration
+  INTO v_id, v_he, v_duration
+  FROM verbs
+  WHERE id = a.matches;
+  CASE
+  WHEN NOT FOUND THEN
+    a.response := a.matches;
+  WHEN v_he IS NULL THEN
+    SELECT * INTO STRICT a FROM do_missing(a);
+  WHEN v_he THEN
+    a.look_after := false;
+    dispatch_sql := format('SELECT * FROM do_%s($1)', lower(v_id));
+    EXECUTE dispatch_sql INTO STRICT a USING a;
+    IF a.look_after THEN
+      a.response := format(E'%s\n\n%s', a.response, do_look());
+    END IF;
+  WHEN NOT v_he THEN
+    -- Passage of time
+    UPDATE characters
+    SET own_time = own_time + coalesce(v_duration, '0 minutes')
+    WHERE id = current_user;
+    -- Display
+    dispatch_sql := format('SELECT * FROM do_%s()', lower(v_id));
+    EXECUTE dispatch_sql INTO STRICT a.response;
+  END CASE;
 END;
 $BODY$;
 
@@ -768,26 +769,26 @@ CREATE FUNCTION main_loop
 ) LANGUAGE plpgsql
 AS $BODY$
 DECLARE
-	next_action actions;
+  next_action actions;
 BEGIN
-	next_action := parse(sentence);
-	CALL dispatch(next_action);
-	INSERT INTO actions
-	( verb
-	, words
-	, matches
-	, sentence
-	, response
-	, look_after
-	) SELECT
-	  (next_action).verb
-	, (next_action).words
-	, (next_action).matches
-	, (next_action).sentence
-	, (next_action).response
-	, (next_action).look_after;
-	stop := next_action.matches = 'QUIT';
-	response := pgif_format(next_action.response);
-	RETURN;
+  next_action := parse(sentence);
+  CALL dispatch(next_action);
+  INSERT INTO actions
+  ( verb
+  , words
+  , matches
+  , sentence
+  , response
+  , look_after
+  ) SELECT
+    (next_action).verb
+  , (next_action).words
+  , (next_action).matches
+  , (next_action).sentence
+  , (next_action).response
+  , (next_action).look_after;
+  stop := next_action.matches = 'QUIT';
+  response := pgif_format(next_action.response);
+  RETURN;
 END;
 $BODY$;
