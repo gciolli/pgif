@@ -89,82 +89,191 @@ SELECT id
 FROM a;
 
 --
--- Objects have a location, an article and a name. They can optionally
--- be mobile.
+-- The hierarchy of Objects is implemented with two distinct tables,
+-- to separate metadata from state, in a way that is compatible with
+-- how PostgreSQL extensions work.
 --
--- A container is an object that has the extra ability to host other
--- objects.  The container can optionally be opaque, meaning that it
--- does not reveal its contents until it is examined. Also, you need
--- to examine an object to determine whether it is a container, unless
--- it is not opaque, in which case you can see its contents.
---
--- A character is a container which is "animated", i.e. with the extra
--- ability to move spontaneously. Therefore it has its own time. While
--- it is possible for a mobile container to be moved from one location
--- to another, that fact alone does not make it animated.
---
--- A location is a container with the extra ability to host a
--- character; therefore it must have a description which is displayed
--- to visiting characters.
+-- Actual data types such as Characters, Containers, Locations and
+-- Objects are implemented as views on object_{metadata,state},
+-- exposing only the columns that make sense. Triggers implement
+-- appropriate DML.
 --
 -- Note that there can be containers that are neither characters nor
 -- locations, and objects that are not containers.
 --
 
-CREATE TABLE instances
+CREATE TABLE object_metadata
 ( id text PRIMARY KEY
 , name text
 , article text
-, current_location text REFERENCES instances(id)
-, description text
+, location text REFERENCES object_metadata(id)
+, own_time timestamp(0)
 , is_mobile bool DEFAULT true
 , is_opaque bool
+, description text
+);
+
+CREATE TABLE object_state
+( id text PRIMARY KEY REFERENCES object_metadata(id)
+, location text REFERENCES object_metadata(id)
 , own_time timestamp(0)
 );
 
-COMMENT ON COLUMN instances.is_opaque IS
-'An object is a container if is_opaque is not null';
+SELECT pg_catalog.pg_extension_config_dump('object_state', '');
 
-COMMENT ON COLUMN instances.description IS
-'A container is a location if description is not null';
-
-COMMENT ON COLUMN instances.own_time IS
-'A container is a character if own_time is not null';
+--
+-- Objects have a location, an article and a name. They can optionally
+-- be mobile.
+--
 
 CREATE VIEW objects AS
 SELECT id
 , name
 , article
-, current_location
+, COALESCE(s.location, i.location) AS location
 , is_mobile
-FROM instances;
+FROM object_metadata i
+JOIN object_state s USING (id);
+
+CREATE FUNCTION tf_objects()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $BODY$
+BEGIN
+  CASE TG_OP
+  WHEN 'INSERT' THEN
+    INSERT INTO object_metadata
+    ( id
+    , name
+    , article
+    , location
+    , is_mobile
+    ) VALUES
+    ( NEW.id
+    , NEW.name
+    , NEW.article
+    , NEW.location
+    , NEW.is_mobile
+    );
+    INSERT INTO object_state
+    ( id
+    ) VALUES
+    ( NEW.id
+    );
+  WHEN 'UPDATE' THEN
+    -- Ensure we are not updating static columns
+    ASSERT NEW.id               = OLD.id;
+    ASSERT NEW.name             = OLD.name;
+    ASSERT NEW.article          = OLD.article
+        OR NEW.article IS NULL;
+    ASSERT NEW.is_mobile        = OLD.is_mobile
+        OR NEW.is_mobile IS NULL;
+    -- Apply the update
+    UPDATE object_state
+    SET location = NEW.location
+    WHERE id = NEW.id;
+  END CASE;
+  RETURN NEW;
+END;
+$BODY$;
+
+CREATE TRIGGER tg_objects
+  INSTEAD OF INSERT OR UPDATE ON objects
+  FOR EACH ROW
+  EXECUTE PROCEDURE tf_objects();
+
+--
+-- A Container is an object that has the extra ability to host other
+-- objects.  The container can optionally be opaque, meaning that it
+-- does not reveal its contents until it is examined. Also, you need
+-- to examine an object to determine whether it is a container, unless
+-- it is not opaque, in which case you can see its contents.
+--
+
+COMMENT ON COLUMN object_metadata.is_opaque IS
+'An object is a container if is_opaque is not null';
 
 CREATE VIEW containers AS
 SELECT id
 , name
 , article
-, current_location
+, COALESCE(s.location, i.location) AS location
 , is_mobile
 , is_opaque
-FROM instances
+FROM object_metadata i
+JOIN object_state s USING (id)
 WHERE is_opaque IS NOT NULL;
+
+CREATE FUNCTION tf_containers()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $BODY$
+BEGIN
+  CASE TG_OP
+  WHEN 'INSERT' THEN
+    INSERT INTO object_metadata
+    ( id
+    , name
+    , article
+    , location
+    , is_mobile
+    , is_opaque
+    ) VALUES
+    ( NEW.id
+    , NEW.name
+    , NEW.article
+    , NEW.location
+    , NEW.is_mobile
+    , NEW.is_opaque
+    );
+    INSERT INTO object_state
+    ( id
+    ) VALUES
+    ( NEW.id
+    );
+  WHEN 'UPDATE' THEN
+    -- Ensure we are not updating static columns
+    ASSERT NEW.id               = OLD.id;
+    ASSERT NEW.name             = OLD.name;
+    ASSERT NEW.article          = OLD.article
+        OR NEW.article IS NULL;
+    ASSERT NEW.is_mobile        = OLD.is_mobile
+        OR NEW.is_mobile IS NULL;
+    ASSERT NEW.is_opaque        = OLD.is_opaque;
+    -- Apply the update
+    UPDATE object_state
+    SET location = NEW.location
+    WHERE id = NEW.id;
+  END CASE;
+  RETURN NEW;
+END;
+$BODY$;
+
+CREATE TRIGGER tg_containers
+  INSTEAD OF INSERT OR UPDATE ON containers
+  FOR EACH ROW
+  EXECUTE PROCEDURE tf_containers();
+
+--
+-- A Location is a container with the extra ability to host a
+-- character; therefore it must have a description which is displayed
+-- to visiting characters.
+--
+
+COMMENT ON COLUMN object_metadata.description IS
+'A container is a location if description is not null';
 
 CREATE VIEW locations AS
 SELECT id
 , name
 , article
-, description
-, current_location
+, location
 , is_mobile
 , is_opaque
-FROM instances
+, description
+FROM object_metadata
 WHERE is_opaque IS NOT NULL
   AND description IS NOT NULL;
-
---
--- The purpose of the following trigger is to ensure that is_opaque
--- and description are automatically populated.
---
 
 CREATE FUNCTION tf_locations()
 RETURNS TRIGGER
@@ -173,26 +282,25 @@ AS $BODY$
 BEGIN
   CASE TG_OP
   WHEN 'INSERT' THEN
-    CASE TG_TABLE_NAME
-    WHEN 'locations' THEN
-      INSERT INTO instances
-      ( id
-      , name
-      , article
-      , description
-      , current_location
-      , is_mobile
-      , is_opaque
-      ) VALUES
-      ( NEW.id
-      , NEW.name
-      , NEW.article
-      , COALESCE(NEW.description, NEW.name)
-      , NEW.current_location
-      , NEW.is_mobile
-      , COALESCE(NEW.is_opaque, true)
-      );
-    END CASE;
+    ASSERT NEW.description IS NOT NULL
+    , 'locations require a description';
+    INSERT INTO object_metadata
+    ( id
+    , name
+    , article
+    , location
+    , is_mobile
+    , is_opaque
+    , description
+    ) VALUES
+    ( NEW.id
+    , NEW.name
+    , NEW.article
+    , NEW.location
+    , NEW.is_mobile
+    , COALESCE(NEW.is_opaque, true)
+    , NEW.description
+    );
   END CASE;
   RETURN NEW;
 END;
@@ -203,17 +311,81 @@ CREATE TRIGGER tg_locations
   FOR EACH ROW
   EXECUTE PROCEDURE tf_locations();
 
+--
+-- A Character is a container which is "animated", i.e. with the extra
+-- ability to move spontaneously. Therefore it has its own time. While
+-- it is possible for a mobile container to be moved from one location
+-- to another, that fact alone does not make it animated.
+--
+
+COMMENT ON COLUMN object_metadata.own_time IS
+'A container is a character if own_time is not null';
+
 CREATE VIEW characters AS
 SELECT id
 , name
 , article
-, own_time
-, current_location
+, COALESCE(s.location, i.location) AS location
+, COALESCE(s.own_time, i.own_time) AS own_time
 , is_mobile
 , is_opaque
-FROM instances
+FROM object_metadata i
+JOIN object_state s USING (id)
 WHERE is_opaque IS NOT NULL
-  AND own_time IS NOT NULL;
+  AND i.own_time IS NOT NULL;
+
+CREATE FUNCTION tf_characters()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $BODY$
+BEGIN
+  CASE TG_OP
+  WHEN 'INSERT' THEN
+    INSERT INTO object_metadata
+    ( id
+    , name
+    , article
+    , location
+    , own_time
+    , is_mobile
+    , is_opaque
+    ) VALUES
+    ( NEW.id
+    , NEW.name
+    , NEW.article
+    , NEW.location
+    , NEW.own_time
+    , NEW.is_mobile
+    , NEW.is_opaque
+    );
+    INSERT INTO object_state
+    ( id
+    ) VALUES
+    ( NEW.id
+    );
+  WHEN 'UPDATE' THEN
+    -- Ensure we are not updating static columns
+    ASSERT NEW.id               = OLD.id;
+    ASSERT NEW.name             = OLD.name;
+    ASSERT NEW.article          = OLD.article
+        OR NEW.article IS NULL;
+    ASSERT NEW.is_mobile        = OLD.is_mobile
+        OR NEW.is_mobile IS NULL;
+    ASSERT NEW.is_opaque        = OLD.is_opaque;
+    -- Apply the update
+    UPDATE object_state
+    SET location = NEW.location
+    ,   own_time = NEW.own_time
+    WHERE id = NEW.id;
+  END CASE;
+  RETURN NEW;
+END;
+$BODY$;
+
+CREATE TRIGGER tg_characters
+  INSTEAD OF INSERT OR UPDATE ON characters
+  FOR EACH ROW
+  EXECUTE PROCEDURE tf_characters();
 
 --
 -- Paths connect locations across directions.
@@ -228,8 +400,8 @@ WHERE is_opaque IS NOT NULL
 
 CREATE TABLE paths
 ( id text PRIMARY KEY
-, src     text NOT NULL REFERENCES instances(id)
-, tgt     text NOT NULL REFERENCES instances(id)
+, src     text NOT NULL REFERENCES object_metadata(id)
+, tgt     text NOT NULL REFERENCES object_metadata(id)
 , src_dir text NOT NULL REFERENCES directions(id)
 , tgt_dir text          REFERENCES directions(id)
 , path_name text
@@ -244,8 +416,8 @@ it results in two one-way paths.';
 CREATE TABLE barriers
 ( id text PRIMARY KEY REFERENCES paths(id)
 , barrier_name text NOT NULL
-, is_closed boolean DEFAULT false
 , auto_close boolean DEFAULT false
+, is_closed boolean DEFAULT false
 , opening_time interval DEFAULT '5 minutes'
 );
 
@@ -285,7 +457,7 @@ SELECT c.id AS character_id
 , p.tgt
 FROM objects c
 JOIN one_way_paths p
-  ON p.src = c.current_location
+  ON p.src = c.location
 JOIN directions d
   ON d.id = p.src_dir
 LEFT JOIN barriers b
@@ -294,10 +466,9 @@ LEFT JOIN barriers b
 CREATE VIEW characters_locations AS
 SELECT c.id AS character_id
 , l.description AS location_description
-, l.name AS location_name
 FROM characters c
 JOIN locations l
-  ON l.id = c.current_location;
+  ON l.id = c.location;
 
 CREATE VIEW characters_objects AS
 SELECT c.id AS character_id
@@ -306,7 +477,7 @@ SELECT c.id AS character_id
 , o.name AS object_name
 FROM characters c
 JOIN objects o
-  ON o.current_location = c.current_location
+  ON o.location = c.location
 WHERE o.id != c.id;
 
 --
@@ -324,7 +495,7 @@ WITH a(t) AS (
   , trim(to_char(own_time, 'Month'))
   , to_char(own_time, 'YYYY, HH12:MI am'))
   FROM characters
-  WHERE id = current_user
+  WHERE id = 'you'
 )
 SELECT format('--[%s]%s', t, repeat('-', 66 - length(t)))
 FROM a
@@ -401,11 +572,10 @@ DECLARE
   w text[];
 BEGIN
   -- (1) description
-  SELECT format('You are in %s.'
-    , coalesce(location_description, location_name))
+  SELECT format(E'You are in %s.', location_description)
   INTO STRICT x
   FROM characters_locations
-  WHERE character_id = current_user;
+  WHERE character_id = 'you';
   -- (2) named exits
   SELECT string_agg
   ( format
@@ -422,20 +592,20 @@ BEGIN
     ), E'\n')
   INTO y
   FROM characters_paths_barriers
-  WHERE character_id = current_user
+  WHERE character_id = 'you'
   AND path_name IS NOT NULL;
   -- (3) anonymous exits
   SELECT string_agg(direction_description, ', ')
   INTO z
   FROM characters_paths_barriers
-  WHERE character_id = current_user
+  WHERE character_id = 'you'
   AND path_name IS NULL;
   -- (4) objects in sight
   SELECT array_agg(format('%s %s'
     , object_article, object_name))
   INTO w
   FROM characters_objects
-  WHERE character_id = current_user;
+  WHERE character_id = 'you';
   --
   RETURN format
   ( E'%s\n%s\n%s\n%s\n%s'
@@ -464,7 +634,7 @@ BEGIN
   SELECT array_agg(format('%s %s', o.article, o.name))
   INTO x
   FROM objects o
-  WHERE o.current_location = current_user;
+  WHERE o.location = 'you';
   --
   RETURN format
   ( E'%s\nYou are carrying %s.'
@@ -490,7 +660,7 @@ BEGIN
   SELECT tgt, path_duration, barrier_is_closed
   INTO v_target_location, v_dt, v_is_closed
   FROM characters_paths_barriers
-  WHERE character_id = current_user
+  WHERE character_id = 'you'
   AND upper(src_dir) = upper(a.words[1]);
   IF a.words = '{}' THEN
     a.response := 'GO requires a direction.';
@@ -501,9 +671,9 @@ BEGIN
       , format('«%s»', lower(a.words[1]))));
   ELSE
     UPDATE characters
-    SET current_location = v_target_location
+    SET location = v_target_location
     , own_time = own_time + v_dt
-    WHERE id = current_user;
+    WHERE id = 'you';
     a.response := format(E'Going %s.', v_direction);
     a.look_after := true;
   END IF;
@@ -526,16 +696,16 @@ BEGIN
     )
   ) INTO v_matches
   FROM characters_objects
-  WHERE character_id = current_user;
+  WHERE character_id = 'you';
   UPDATE objects o
-  SET current_location = current_user
+  SET location = 'you'
   FROM characters u
-  WHERE o.current_location = u.current_location
+  WHERE o.location = u.location
   AND format('%s %s', o.article, o.name) = v_matches;
   IF FOUND THEN
     UPDATE characters
     SET own_time = own_time + '2 minutes'
-    WHERE id = current_user;
+    WHERE id = 'you';
     a.response := format(E'You take %s.', v_matches);
     a.look_after := true;
   ELSE
@@ -560,16 +730,16 @@ BEGIN
     )
   ) INTO v_matches
   FROM objects
-  WHERE current_location = current_user;
+  WHERE location = 'you';
   UPDATE objects o
-  SET current_location = u.current_location
+  SET location = u.location
   FROM characters u
-  WHERE o.current_location = current_user
+  WHERE o.location = 'you'
   AND format('%s %s', o.article, o.name) = v_matches;
   IF FOUND THEN
     UPDATE characters
     SET own_time = own_time + '2 minutes'
-    WHERE id = current_user;
+    WHERE id = 'you';
     a.response := format(E'You drop %s.', v_matches);
     a.look_after := true;
   ELSE
@@ -590,7 +760,7 @@ BEGIN
   , candidates := array_agg(barrier_name)
   ) INTO v_matches
   FROM characters_paths_barriers
-  WHERE character_id = current_user
+  WHERE character_id = 'you'
   AND barrier_is_closed;
   UPDATE barriers
   SET is_closed = false
@@ -600,7 +770,7 @@ BEGIN
   IF FOUND THEN
     UPDATE characters
     SET own_time = own_time + v_dt
-    WHERE id = current_user;
+    WHERE id = 'you';
     a.response := format(E'You open %s.', v_matches);
   ELSE
     a.response := v_matches;
@@ -619,7 +789,7 @@ BEGIN
   , candidates := array_agg(barrier_name)
   ) INTO v_matches
   FROM characters_paths_barriers
-  WHERE character_id = current_user
+  WHERE character_id = 'you'
   AND NOT barrier_is_closed;
   UPDATE barriers
   SET is_closed = true
@@ -643,7 +813,7 @@ BEGIN
     , '5 minutes');
   UPDATE characters
   SET own_time = own_time + dt
-  WHERE id = current_user;
+  WHERE id = 'you';
   a.response := CASE WHEN dt > '0 minutes' THEN 'You wait.' ELSE '' END;
   a.look_after := true;
 END;
@@ -754,7 +924,7 @@ BEGIN
     -- Passage of time
     UPDATE characters
     SET own_time = own_time + coalesce(v_duration, '0 minutes')
-    WHERE id = current_user;
+    WHERE id = 'you';
     -- Display
     dispatch_sql := format('SELECT * FROM do_%s()', lower(v_id));
     EXECUTE dispatch_sql INTO STRICT a.response;
