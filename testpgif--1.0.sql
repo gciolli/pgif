@@ -1,7 +1,7 @@
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION testpgif" to load this file. \quit
 
-TRUNCATE instances, paths CASCADE;
+TRUNCATE object_metadata CASCADE;
 
 --
 -- Initial state
@@ -11,7 +11,13 @@ CREATE PROCEDURE pgif_init()
 LANGUAGE plpgsql
 AS $BODY$
 BEGIN
-	TRUNCATE actions;
+	TRUNCATE actions
+	, object_state
+	, barrier_state;
+	INSERT INTO object_state(id)
+	  SELECT id FROM object_metadata;
+	INSERT INTO barrier_state(id)
+	  SELECT id FROM barrier_metadata;
 END;
 $BODY$;
 

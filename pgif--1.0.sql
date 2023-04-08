@@ -15,6 +15,9 @@ CREATE TABLE actions
 , look_after boolean
 );
 
+SELECT pg_catalog.pg_extension_config_dump('actions', '');
+SELECT pg_catalog.pg_extension_config_dump('actions_id_seq', '');
+
 CREATE VIEW current_action AS
 SELECT *
 FROM actions
@@ -130,9 +133,9 @@ CREATE VIEW objects AS
 SELECT id
 , name
 , article
-, COALESCE(s.location, i.location) AS location
+, COALESCE(s.location, m.location) AS location
 , is_mobile
-FROM object_metadata i
+FROM object_metadata m
 JOIN object_state s USING (id);
 
 CREATE FUNCTION tf_objects()
@@ -153,12 +156,7 @@ BEGIN
     , NEW.name
     , NEW.article
     , NEW.location
-    , NEW.is_mobile
-    );
-    INSERT INTO object_state
-    ( id
-    ) VALUES
-    ( NEW.id
+    , COALESCE(NEW.is_mobile, true)
     );
   WHEN 'UPDATE' THEN
     -- Ensure we are not updating static columns
@@ -197,10 +195,10 @@ CREATE VIEW containers AS
 SELECT id
 , name
 , article
-, COALESCE(s.location, i.location) AS location
+, COALESCE(s.location, m.location) AS location
 , is_mobile
 , is_opaque
-FROM object_metadata i
+FROM object_metadata m
 JOIN object_state s USING (id)
 WHERE is_opaque IS NOT NULL;
 
@@ -223,13 +221,8 @@ BEGIN
     , NEW.name
     , NEW.article
     , NEW.location
-    , NEW.is_mobile
+    , COALESCE(NEW.is_mobile, true)
     , NEW.is_opaque
-    );
-    INSERT INTO object_state
-    ( id
-    ) VALUES
-    ( NEW.id
     );
   WHEN 'UPDATE' THEN
     -- Ensure we are not updating static columns
@@ -297,7 +290,7 @@ BEGIN
     , NEW.name
     , NEW.article
     , NEW.location
-    , NEW.is_mobile
+    , COALESCE(NEW.is_mobile, true)
     , COALESCE(NEW.is_opaque, true)
     , NEW.description
     );
@@ -325,14 +318,14 @@ CREATE VIEW characters AS
 SELECT id
 , name
 , article
-, COALESCE(s.location, i.location) AS location
-, COALESCE(s.own_time, i.own_time) AS own_time
+, COALESCE(s.location, m.location) AS location
+, COALESCE(s.own_time, m.own_time) AS own_time
 , is_mobile
 , is_opaque
-FROM object_metadata i
+FROM object_metadata m
 JOIN object_state s USING (id)
 WHERE is_opaque IS NOT NULL
-  AND i.own_time IS NOT NULL;
+  AND m.own_time IS NOT NULL;
 
 CREATE FUNCTION tf_characters()
 RETURNS TRIGGER
@@ -355,13 +348,8 @@ BEGIN
     , NEW.article
     , NEW.location
     , NEW.own_time
-    , NEW.is_mobile
+    , COALESCE(NEW.is_mobile, true)
     , NEW.is_opaque
-    );
-    INSERT INTO object_state
-    ( id
-    ) VALUES
-    ( NEW.id
     );
   WHEN 'UPDATE' THEN
     -- Ensure we are not updating static columns
@@ -390,13 +378,6 @@ CREATE TRIGGER tg_characters
 --
 -- Paths connect locations across directions.
 --
--- A path can optionally have a barrier. Barriers can be opened and
--- closed, and have an optional auto_close attribute, to reflect the
--- way most doors work nowadays. For now we do not represent auto_open
--- doors as they would add little in their generic form. The only way
--- an auto open door can make sense is to depend on some specific
--- condition, such as the presence of a given object or character.
---
 
 CREATE TABLE paths
 ( id text PRIMARY KEY
@@ -413,13 +394,82 @@ COMMENT ON COLUMN paths.tgt_dir IS
 'If tgt_dir is set, then the path is considered two-way, meaning that
 it results in two one-way paths.';
 
-CREATE TABLE barriers
+--
+-- A path can optionally have a barrier. Barriers can be opened and
+-- closed, and have an optional auto_close attribute, to reflect the
+-- way most doors work nowadays. For now we do not represent auto_open
+-- doors as they would add little in their generic form. The only way
+-- an auto open door can make sense is to depend on some specific
+-- condition, such as the presence of a given object or character.
+--
+
+CREATE TABLE barrier_metadata
 ( id text PRIMARY KEY REFERENCES paths(id)
-, barrier_name text NOT NULL
-, auto_close boolean DEFAULT false
 , is_closed boolean DEFAULT false
+, auto_close boolean DEFAULT false
+, barrier_name text NOT NULL
 , opening_time interval DEFAULT '5 minutes'
 );
+
+CREATE TABLE barrier_state
+( id text PRIMARY KEY REFERENCES barrier_metadata(id)
+, is_closed boolean DEFAULT false
+);
+
+SELECT pg_catalog.pg_extension_config_dump('barrier_state', '');
+
+CREATE VIEW barriers AS
+SELECT id
+, COALESCE(s.is_closed, m.is_closed) AS is_closed
+, auto_close
+, barrier_name
+, opening_time
+FROM barrier_metadata m
+JOIN barrier_state s USING (id);
+
+CREATE FUNCTION tf_barriers()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $BODY$
+BEGIN
+  CASE TG_OP
+  WHEN 'INSERT' THEN
+    INSERT INTO barrier_metadata
+    ( id
+    , is_closed
+    , auto_close
+    , barrier_name
+    , opening_time
+    ) VALUES
+    ( NEW.id
+    , COALESCE(NEW.is_closed, false)
+    , COALESCE(NEW.auto_close, false)
+    , NEW.barrier_name
+    , COALESCE(NEW.opening_time, '5 minutes')
+    );
+  WHEN 'UPDATE' THEN
+    -- Ensure we are not updating static columns
+    ASSERT NEW.id               = OLD.id;
+    ASSERT NEW.auto_close       = OLD.auto_close;
+    ASSERT NEW.barrier_name     = OLD.barrier_name;
+    ASSERT NEW.opening_time     = OLD.opening_time;
+    -- Apply the update
+    UPDATE barrier_state
+    SET is_closed = NEW.is_closed
+    WHERE id = NEW.id;
+  END CASE;
+  RETURN NEW;
+END;
+$BODY$;
+
+CREATE TRIGGER tg_barriers
+  INSTEAD OF INSERT OR UPDATE ON barriers
+  FOR EACH ROW
+  EXECUTE PROCEDURE tf_barriers();
+
+--
+-- API views
+--
 
 CREATE VIEW characters_paths_barriers AS
 WITH one_way_paths AS (
@@ -455,7 +505,7 @@ SELECT c.id AS character_id
 , d.description AS direction_description
 , p.src_dir
 , p.tgt
-FROM objects c
+FROM characters c
 JOIN one_way_paths p
   ON p.src = c.location
 JOIN directions d
@@ -694,6 +744,7 @@ BEGIN
       , object_name
       )
     )
+  , not_matching := 'thing that can be taken'
   ) INTO v_matches
   FROM characters_objects
   WHERE character_id = 'you';
@@ -728,6 +779,7 @@ BEGIN
       , name
       )
     )
+  , not_matching := 'thing that can be dropped'
   ) INTO v_matches
   FROM objects
   WHERE location = 'you';
@@ -758,6 +810,7 @@ BEGIN
   SELECT match
   ( word := a.words[1]
   , candidates := array_agg(barrier_name)
+  , not_matching := 'thing that can be opened'
   ) INTO v_matches
   FROM characters_paths_barriers
   WHERE character_id = 'you'
@@ -787,6 +840,7 @@ BEGIN
   SELECT match
   ( word := a.words[1]
   , candidates := array_agg(barrier_name)
+  , not_matching := 'thing that can be closed'
   ) INTO v_matches
   FROM characters_paths_barriers
   WHERE character_id = 'you'
@@ -836,6 +890,7 @@ CREATE FUNCTION match
 , candidates IN text[]
 , regexp IN text DEFAULT '%s'
 , response OUT text
+, not_matching IN text DEFAULT 'thing'
 ) LANGUAGE plpgsql
 AS $BODY$
 DECLARE
@@ -848,7 +903,7 @@ BEGIN
   CASE
   WHEN v_matches IS NULL THEN
     response := format
-    ( 'ERROR: cannot match «%s»', word);
+    ( 'ERROR: «%s» does not match any%s', word, not_matching);
   WHEN array_length(v_matches, 1) > 1 THEN
     response := format
     ( 'ERROR: ambiguous term «%s» matches: %s'
@@ -902,6 +957,7 @@ BEGIN
   ( word := a.verb
   , regexp := '^%s'
   , candidates := array_agg(id)
+  , not_matching := ' valid verb'
   ) INTO a.matches
   FROM verbs;
   SELECT id, has_effect, default_duration
